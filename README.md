@@ -31,10 +31,14 @@ phone widths:
   <img src="docs/ui/dashboard-mobile.png" alt="AirTrack dashboard, phone" width="20%" align="top">
 </p>
 
+**Setup portal** (captive page on the `AirTrack-xxxx` hotspot) and the
 **HTTPS locate helper** (served from this repo's GitHub Pages) that hands your
 browser's location back to the dashboard:
 
-<img src="docs/ui/locate-helper.png" alt="Locate helper" width="40%">
+<p>
+  <img src="docs/ui/setup-portal.png" alt="Setup portal" width="34%" align="top">
+  <img src="docs/ui/locate-helper.png" alt="Locate helper" width="34%" align="top">
+</p>
 
 ## Firmware status
 

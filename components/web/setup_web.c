@@ -92,88 +92,109 @@ static bool csrf_token_matches(const char *candidate)
     return difference == 0U;
 }
 
+#define SETUP_ICON_PLANE "<svg viewBox=\"0 0 24 24\"><path d=\"M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z\"/></svg>"
+#define SETUP_ICON_WIFI "<svg viewBox=\"0 0 24 24\"><path d=\"M12 21l3.5-4.7a5.9 5.9 0 0 0-7 0zm0-9a10 10 0 0 0-6.4 2.3l1.8 2.4a7 7 0 0 1 9.2 0l1.8-2.4A10 10 0 0 0 12 12zm0-6A16 16 0 0 0 1.5 9.9l1.8 2.4a13 13 0 0 1 17.4 0l1.8-2.4A16 16 0 0 0 12 6z\"/></svg>"
+#define SETUP_ICON_SAVE "<svg viewBox=\"0 0 24 24\"><path d=\"M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10z\"/></svg>"
+
+/* Same visual language as the LAN dashboard (components/web/assets/app.css),
+ * inlined because the captive portal must be a single self-contained page. */
+static const char SETUP_CSS[] =
+    ":root{color-scheme:light;font-family:system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;"
+    "--navy:#0d2a4d;--blue:#1e88e5;--blue2:#1976d2;--ink:#12213a;--muted:#5d6b80;"
+    "--line:#e3e8ef;--bg:#f3f5f8}*{box-sizing:border-box}"
+    "body{margin:0;background:var(--bg);color:var(--ink);min-height:100vh}"
+    ".top{background:var(--navy);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:10px;"
+    "font-size:1.35rem;font-weight:800}.top svg{width:26px;height:26px;fill:#fff}"
+    ".top small{margin-left:auto;font-size:.8rem;font-weight:600;color:#c9d6e8;letter-spacing:.06em}"
+    "main{width:min(100%,520px);margin:0 auto;padding:18px 16px 24px}"
+    "h1{font-size:1.5rem;margin:6px 0 4px}.lead{color:var(--muted);line-height:1.5;margin:0 0 16px}"
+    ".card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 22px;"
+    "box-shadow:0 1px 2px #0d2a4d0f;margin:14px 0}"
+    "h2{margin:0 0 12px;font-size:1.12rem;font-weight:700;display:flex;align-items:center;gap:8px}"
+    "h2 svg{width:20px;height:20px;fill:var(--blue)}"
+    "h3{margin:18px 0 8px;font-size:.98rem;font-weight:600}"
+    ".join{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;font-size:.98rem}"
+    ".join span{color:var(--muted)}.join code{overflow-wrap:anywhere;font-size:1.05rem;font-weight:700}"
+    ".join code.key{color:var(--blue)}"
+    "label{display:block;font-size:.92rem;color:var(--muted);margin:14px 0 6px}"
+    "input,select{width:100%;padding:11px 12px;border:1px solid #c9d3e0;border-radius:8px;"
+    "font:inherit;color:var(--ink);background:#fff}"
+    "input:focus,select:focus{outline:2px solid #1e88e555;border-color:var(--blue)}"
+    "select{white-space:nowrap;text-overflow:ellipsis}.manual{color:var(--blue);font-weight:600}"
+    "button{width:100%;margin-top:18px;border:1px solid var(--blue);border-radius:8px;padding:13px;"
+    "font:inherit;font-weight:700;color:#fff;background:var(--blue);cursor:pointer;"
+    "display:inline-flex;align-items:center;justify-content:center;gap:8px}"
+    "button svg{width:18px;height:18px;fill:currentColor}button:hover{background:var(--blue2)}"
+    ".hint,footer{color:var(--muted);font-size:.86rem;line-height:1.5}.hint{margin:8px 0 0}"
+    "footer{text-align:center;margin-top:16px}"
+    "details{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}"
+    "summary{cursor:pointer;color:var(--blue);font-weight:700;font-size:.95rem}"
+    ".row{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}"
+    ".check{display:flex;align-items:center;gap:10px;margin:14px 0 6px;color:var(--ink);"
+    "font-size:.95rem}.check input{width:auto;margin:0;accent-color:var(--blue)}"
+    ".two{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}"
+    "a{color:var(--blue)}";
+
 static const char PAGE_HEAD[] =
     "<!doctype html><html lang=en><head><meta charset=utf-8>"
     "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-    "<title>AirTrack setup</title><style>"
-    ":root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;"
-    "background:#071017;color:#eef8fb}*{box-sizing:border-box}"
-    "body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;"
-    "background:radial-gradient(circle at top,#173544,#071017 58%)}"
-    "main{width:min(100%,430px)}h1{font-size:2rem;letter-spacing:.04em;margin:.15em 0}"
-    ".eyebrow{color:#63e6be;font-weight:750;letter-spacing:.18em;font-size:.74rem}"
-    ".lead{color:#b9cbd2;line-height:1.5;margin:.4rem 0 1.2rem}"
-    ".card{background:#0e2029;border:1px solid #28414c;border-radius:18px;"
-    "padding:18px;box-shadow:0 20px 60px #0008;margin:12px 0}"
-    ".join{display:grid;grid-template-columns:auto 1fr;gap:8px 13px;font-size:.92rem}"
-    ".join span{color:#8faab5}.join code{overflow-wrap:anywhere;color:#fff}"
-    "label{display:block;font-size:.88rem;color:#b9cbd2;margin:14px 0 6px}"
-    "input,select{width:100%;border:1px solid #38535f;border-radius:11px;padding:12px;"
-    "font:inherit;color:#fff;background:#07141a;outline:none}"
-    "input:focus,select:focus{border-color:#63e6be;box-shadow:0 0 0 3px #63e6be22}"
-    "select{white-space:nowrap;text-overflow:ellipsis}.manual{color:#63e6be}"
-    "button{width:100%;margin-top:18px;border:0;border-radius:11px;padding:13px;"
-    "font:inherit;font-weight:800;color:#05241c;background:#63e6be;cursor:pointer}"
-    ".hint,footer{color:#8faab5;font-size:.78rem;line-height:1.45}"
-    "footer{text-align:center;margin-top:15px}footer strong{color:#b9cbd2}"
-    "details{margin-top:18px;border-top:1px solid #28414c;padding-top:10px}"
-    "summary{cursor:pointer;color:#63e6be;font-weight:700;font-size:.9rem}"
-    ".row{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}"
-    ".check{display:flex;align-items:center;gap:10px;margin:14px 0 6px;"
-    "color:#b9cbd2;font-size:.88rem}.check input{width:auto;margin:0}"
-    "</style></head><body><main><div class=eyebrow>LOCAL DEVICE SETUP</div>"
-    "<h1>AirTrack</h1><p class=lead>Choose the Wi-Fi network this display "
-    "should use. Setup stays entirely on this device.</p><section class=card>"
-    "<div class=eyebrow>SETUP HOTSPOT</div><div class=join>"
-    "<span>SSID</span><code>";
+    "<title>AirTrack setup</title><style>";
+
+static const char PAGE_AFTER_CSS[] =
+    "</style></head><body><div class=top>" SETUP_ICON_PLANE "AirTrack"
+    "<small>LOCAL DEVICE SETUP</small></div><main>"
+    "<h1>Connect this display</h1><p class=lead>Choose the Wi-Fi network "
+    "AirTrack should use and where it lives. Setup stays entirely on this "
+    "device.</p><section class=card><h2>" SETUP_ICON_WIFI "Setup hotspot</h2>"
+    "<div class=join><span>SSID</span><code>";
 
 static const char PAGE_MIDDLE[] =
-    "</code><span>Password</span><code>";
+    "</code><span>Password</span><code class=key>";
 
 static const char PAGE_AFTER_PASSWORD[] =
     "</code><span>Address</span><code>";
 
 static const char PAGE_FORM_START[] =
-    "</code></div></section><form class=card method=post action=\"";
+    "</code></div></section><form method=post action=\"";
 
 static const char PAGE_FORM_BEFORE_TOKEN[] =
     "\" accept-charset=UTF-8 autocomplete=off>"
     "<input type=hidden name=csrf_token value=\"";
 
 static const char PAGE_FORM_BEFORE_NETWORKS[] =
-    "\">"
-    "<div class=eyebrow>CONNECT AIRTRACK</div>"
-    "<label for=nearby>Nearby Wi-Fi networks</label>"
+    "\"><section class=card><h2>Wi-Fi network</h2>"
+    "<label for=nearby>Nearby networks</label>"
     "<select id=nearby aria-describedby=network-hint>";
 
 static const char PAGE_FORM_AFTER_NETWORKS[] =
     "</select><p id=network-hint class=hint>Security and signal strength are "
-    "shown beside each network. Choose one, or enter a hidden network below.</p>"
-    "<label for=ssid>Wi-Fi network name <span class=manual>(editable)</span></label>"
+    "shown beside each network. Choose one, or type a hidden network below.</p>"
+    "<label for=ssid>Network name <span class=manual>(editable)</span></label>"
     "<input id=ssid name=ssid type=text maxlength=32 autocomplete=off "
     "required value=\"";
 
 static const char PAGE_FORM_AFTER_SSID[] =
-    "\"><label for=password>Wi-Fi password</label>"
+    "\"><label for=password>Password</label>"
     "<input id=password name=password type=password maxlength=63 "
     "autocomplete=off>"
-    "<p class=hint>Leave password blank only for an open network. Protected "
-    "networks require 8 to 63 characters. The saved password is never shown; "
-    "re-enter it when keeping the same network.</p>"
-    "<div class=eyebrow>TRACKING LOCATION</div>"
-    "<p class=hint>Enter the fixed location of this display. Coordinates are "
-    "used only to request nearby aircraft from adsb.fi.</p>"
-    "<label for=latitude>Latitude</label>"
+    "<p class=hint>Leave blank only for an open network; protected networks "
+    "need 8 to 63 characters. A saved password is never shown here, so re-enter "
+    "it when keeping the same network.</p></section>"
+    "<section class=card><h2>Tracking location</h2>"
+    "<p class=hint style=\"margin:0 0 4px\">The fixed position of this display, "
+    "used only to request nearby aircraft from adsb.fi. You can refine it later "
+    "from the dashboard, which can also read your phone's location.</p>"
+    "<div class=two><div><label for=latitude>Latitude</label>"
     "<input id=latitude name=latitude type=number step=any min=-90 max=90 "
     "placeholder=37.6213 required";
 
 static const char PAGE_FORM_AFTER_LATITUDE[] =
-    "><label for=longitude>Longitude</label>"
+    "></div><div><label for=longitude>Longitude</label>"
     "<input id=longitude name=longitude type=number step=any min=-180 max=180 "
     "placeholder=-122.3790 required";
 
 static const char PAGE_FORM_AFTER_LONGITUDE[] =
-    "><label for=radius>Search radius (nautical miles)</label>"
+    "></div></div><label for=radius>Search radius (nautical miles)</label>"
     "<input id=radius name=radius type=number min=1 max=250 required value=";
 
 /* Advanced options are rendered with printf-style placeholders resolved by
@@ -185,12 +206,14 @@ static const char PAGE_FORM_OPTIONS_HEAD[] =
 static const char PAGE_FORM_OPTIONS_TAIL[] =
     "<p class=hint>Ground aircraft are excluded by default so parked traffic "
     "at a nearby airport does not hide the closest airborne target. SD "
-    "logging writes NDJSON to /airtrack/logs when a FAT32 card is present.</p>"
-    "</details><button type=submit>Save and connect</button></form>"
+    "logging writes NDJSON to /airtrack/logs when a FAT32 card is present. "
+    "Everything here can be changed later from the dashboard.</p>"
+    "</details></section><button type=submit>" SETUP_ICON_SAVE
+    "Save and connect</button></form>"
     "<script>const network=document.getElementById('nearby'),ssid=document."
     "getElementById('ssid');network.onchange=function(){if(network.value){ssid."
     "value=network.value;document.getElementById('password').focus()}};</script>"
-    "<footer><strong>Data: adsb.fi</strong><br>Not for navigation or "
+    "<footer>Data provided by adsb.fi &middot; Not for navigation or "
     "collision avoidance.</footer></main></body></html>";
 
 static const char RESULT_HEAD[] =
@@ -198,10 +221,10 @@ static const char RESULT_HEAD[] =
     "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
     "<title>AirTrack setup</title><style>"
     "body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;"
-    "font-family:system-ui,-apple-system,sans-serif;background:#071017;color:#eef8fb}"
-    "main{width:min(100%,420px);padding:24px;border:1px solid #28414c;"
-    "border-radius:18px;background:#0e2029}h1{margin-top:0;color:#63e6be}"
-    "p{line-height:1.55;color:#b9cbd2}a{color:#63e6be}small{color:#8faab5}"
+    "font-family:system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;background:#f3f5f8;color:#12213a}"
+    "main{width:min(100%,460px);padding:24px;border:1px solid #e3e8ef;"
+    "border-radius:12px;background:#fff;box-shadow:0 1px 2px #0d2a4d0f}h1{margin-top:0;color:#0d2a4d}"
+    "p{line-height:1.55;color:#5d6b80}a{color:#1e88e5}small{color:#5d6b80}"
     "</style></head><body><main>";
 
 static esp_err_t set_response_headers(httpd_req_t *request)
@@ -402,7 +425,7 @@ static esp_err_t send_options_section(httpd_req_t *request)
     if (result == ESP_OK) {
         char numeric[512];
         const int length = snprintf(numeric, sizeof(numeric),
-            "</select><div class=row><div><label for=poll>Poll interval (s)"
+            "</select><div class=row><div><label for=poll>Refresh interval (s)"
             "</label><input id=poll name=poll type=number min=2 max=300 "
             "value=%u></div><div><label for=brightness>Brightness (%%)</label>"
             "<input id=brightness name=brightness type=number min=0 max=50 "
@@ -486,6 +509,12 @@ static esp_err_t setup_page_handler(httpd_req_t *request)
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_HEAD);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, SETUP_CSS);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_AFTER_CSS);
     }
     if (result == ESP_OK) {
         result = send_html_escaped(request, s_web.ap_ssid);
