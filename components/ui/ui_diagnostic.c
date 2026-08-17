@@ -523,7 +523,7 @@ static esp_err_t create_setup_screen(const char *ap_ssid,
 
     create_centered_label(
         screen,
-        recovery ? "Retrying saved network " LV_SYMBOL_BULLET " or scan QR"
+        recovery ? "Retrying Wi-Fi " LV_SYMBOL_BULLET " or scan the QR"
                  : "Join, then open the address",
         282, &lv_font_montserrat_10, UI_COLOR_DIM);
     create_hline(screen, 14, 298, BOARD_LCD_H_RES - 28, 0x1C2A3D);

@@ -10,6 +10,31 @@ and no PSRAM. Verify the flash capacity before installing it on another board
 revision. AirTrack is an enthusiast display, not a receiver, navigation aid,
 or collision-warning device.
 
+## Screens
+
+Rendered from the current firmware: the LCD frames come from
+`tools/host_ui_render/render.sh` (the real LVGL UI code drawn on the host at
+2x), the dashboard captures are headless-Chromium screenshots of the live
+device. Design references are in [`docs/ui/`](docs/ui/).
+
+**Device** — live target with route, single-flight focus, no reports, Wi-Fi
+lost, setup, and recovery setup:
+
+![AirTrack LCD states](docs/ui/lcd-states.png)
+
+**Dashboard** (`http://<device-ip>/` or `http://airtrack.local/`), desktop and
+phone widths:
+
+<p>
+  <img src="docs/ui/dashboard.png" alt="AirTrack dashboard, desktop" width="66%">
+  <img src="docs/ui/dashboard-mobile.png" alt="AirTrack dashboard, phone" width="20%" align="top">
+</p>
+
+**HTTPS locate helper** (served from this repo's GitHub Pages) that hands your
+browser's location back to the dashboard:
+
+<img src="docs/ui/locate-helper.png" alt="Locate helper" width="40%">
+
 ## Firmware status
 
 The connected unit is running AirTrack 1.5.0.
