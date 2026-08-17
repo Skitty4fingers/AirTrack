@@ -12,7 +12,34 @@ or collision-warning device.
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.1.0. Changes since 1.0.0:
+The connected unit is running AirTrack 1.2.0.
+
+Changes in 1.2.0 (bringing the device and web UI in line with the concepts in
+`docs/ui/`):
+
+- LCD tracking screen redesigned after `device-states-concept-v2.png`: header
+  with Wi-Fi glyph, feed dot, and last-update age; centred callsign with
+  `TYPE • REG`; large `3.2 NM` distance; a compass gauge with N/E/S/W, ticks,
+  a bearing arrow and highlight arc, and a plane silhouette rotated to the
+  aircraft's track; icon rows for bearing, altitude, vertical rate, and speed;
+  and a two-line footer. The no-reports state shows a slowly sweeping radar
+  and `within 25 NM`; the setup screen shows `SCAN TO CONNECT`, a larger QR,
+  and amber SSID / password / address.
+- LAN dashboard rebuilt after `web-configurator-concept.png`: light theme,
+  sidebar (Dashboard / Location / Display / Storage / System), status bar
+  (ONLINE, Wi-Fi, API state, updated-ago), a nearest-aircraft card with a
+  live SVG compass and the five nearest aircraft, and *editable* settings
+  cards — search location, radius slider, airborne-only toggle, refresh
+  interval, SD sighting log, brightness slider, units — with a Save button
+  that applies changes immediately (no restart), plus a System card with
+  diagnostics and a Restart button. CSS/JS are real files under
+  `components/web/assets/` embedded at build time.
+- Policy change: tracker/display settings can now be changed from the LAN
+  dashboard at any time (CSRF token + canonical-Host + content-type checks),
+  not only once while unconfigured. Wi-Fi credentials remain changeable only
+  from the isolated setup hotspot.
+
+Changes in 1.1.0:
 
 - the ADS-B worker keeps one HTTPS connection alive between polls instead of
   performing a full TLS handshake every few seconds (one TLS session per
@@ -57,7 +84,8 @@ The implemented core includes:
 - live, empty, stale, offline, and configuration-required LCD states, with the
   complete SSID and IPv4 address retained in the footer;
 - a station-LAN dashboard at the address shown on the LCD and at
-  `http://airtrack.local`, when mDNS is supported by the client;
+  `http://airtrack.local`, when mDNS is supported by the client, with
+  editable tracker/display settings and a restart button;
 - bounded JSON at `/api/v1/status`, `/api/v1/config`, and
   `/api/v1/aircraft`;
 - SNTP time synchronization and optional bounded NDJSON logging to FAT32 SD;

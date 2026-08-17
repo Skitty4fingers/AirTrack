@@ -40,20 +40,28 @@ typedef struct {
     const airtrack_snapshot_t *aircraft;
 } status_web_snapshot_t;
 
-typedef esp_err_t (*status_web_save_location_cb_t)(int32_t latitude_e7,
-                                                   int32_t longitude_e7,
-                                                   uint16_t radius_nm,
-                                                   void *user_context);
+/**
+ * Persist and apply a complete validated tracker/display settings record
+ * posted from the LAN dashboard.  Wi-Fi credentials are never part of it.
+ * Return ESP_OK only after the settings are durably stored, and overwrite
+ * *settings with the record as persisted (new generation number); the server
+ * reflects it immediately in later responses.
+ */
+typedef esp_err_t (*status_web_save_settings_cb_t)(
+    airtrack_settings_t *settings, void *user_context);
+
+/** Schedule a controlled restart requested from the dashboard. */
+typedef esp_err_t (*status_web_reboot_cb_t)(void *user_context);
 
 /**
  * Start the HTTP server and copy its initial status snapshot.
  *
- * The server is read-only after initial provisioning.  When the copied
- * settings have no location, one CSRF-protected location form is enabled;
- * the callback must persist it and reject later changes.
+ * Every mutating request is form-encoded, requires the canonical numeric
+ * Host, and carries the per-start CSRF token embedded in the page.
  */
 esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
-                           status_web_save_location_cb_t save_location,
+                           status_web_save_settings_cb_t save_settings,
+                           status_web_reboot_cb_t reboot,
                            void *user_context);
 
 /** Atomically replace the status snapshot used by subsequent requests. */

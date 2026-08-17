@@ -314,19 +314,24 @@ This single contract feeds the display, web API, and SD logger.
 All endpoints are versioned under `/api/v1`.
 
 The connected-mode implementation serves a self-contained dashboard at
-`GET /`, plus bounded JSON status/config/aircraft snapshots. It starts only
-after the station obtains an IPv4 lease, stops immediately if that lease is
-lost, and is stopped before the captive setup AP starts. Its data contract
-cannot receive or expose Wi-Fi/setup passwords. When location is absent, the
-dashboard permits exactly one CSRF- and Host-validated location/radius save;
-after that, LAN operation is read-only. Holding BOOT for five seconds opens the
-isolated WPA2 setup portal for later Wi-Fi or location/radius changes.
+`GET /` (HTML generated on the device, `/app.css` and `/app.js` embedded from
+`components/web/assets/`), plus bounded JSON status/config/aircraft snapshots.
+It starts only after the station obtains an IPv4 lease, stops immediately if
+that lease is lost, and is stopped before the captive setup AP starts. Its
+data contract cannot receive or expose Wi-Fi/setup passwords. Tracker and
+display settings (location, radius, ground filter, poll interval, units,
+brightness, SD logging) are editable from the dashboard at any time via
+`POST /api/v1/config`, guarded by a per-start CSRF token, the canonical numeric
+`Host`, and a form content-type check, and are applied live without a restart.
+`POST /api/v1/reboot` restarts the device with the same guards. Holding BOOT
+for five seconds opens the isolated WPA2 setup portal for Wi-Fi changes.
 
 | Method/path | Purpose |
 |---|---|
 | `GET /api/v1/status` | Firmware, uptime, mode, SSID/IP/RSSI, API, SD, heap, reset cause |
 | `GET /api/v1/config` | Redacted effective configuration with generation ETag |
-| `POST /api/v1/config/location` | One-time initial location/radius save while unconfigured |
+| `POST /api/v1/config` | Save and live-apply tracker/display settings (CSRF + Host) |
+| `POST /api/v1/reboot` | Controlled restart (CSRF + Host) |
 | `GET /api/v1/aircraft` | Current nearest/top-five snapshot |
 | `GET /api/v1/wifi/scan` | Return bounded cached scan results and age |
 | `POST /api/v1/wifi/scan` | Queue a scan job and return `202` |
@@ -335,7 +340,6 @@ isolated WPA2 setup portal for later Wi-Fi or location/radius changes.
 | `POST /api/v1/provision` | Test and commit Wi-Fi plus initial tracker settings |
 | `GET /api/v1/logs` | Deferred: list available rotated logs |
 | `GET /api/v1/logs/{name}` | Deferred: download a validated log filename |
-| `POST /api/v1/reboot` | Deferred: authenticated controlled restart |
 | `POST /api/v1/factory-reset` | Deferred: authenticated confirmed settings erase |
 | `POST /api/v1/ota` | Deferred: signed firmware upload with rollback |
 
@@ -357,7 +361,7 @@ New Wi-Fi credentials are staged while the setup AP remains available. Commit on
 6. Stale/API offline: last target dimmed with explicit age and error category.
 7. System: IP, RSSI, heap, uptime, firmware, and SD health.
 
-Every station-connected view reserves the bottom network/attribution footer. Redraw only values that changed and update freshness at 1 Hz; avoid continuous animations and full-screen invalidation.
+Every station-connected view reserves the bottom network/attribution footer. Redraw only values that changed and update freshness at 1 Hz; the only continuous animation is the slow radar sweep on the no-reports screen. `tools/host_ui_render/render.sh` renders every screen on the host for review.
 
 Backlight behavior:
 

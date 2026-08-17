@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "ui_diagnostic.c"
+    SRCS "ui_diagnostic.c" "ui_icons.c"
     INCLUDE_DIRS "include"
     REQUIRES
         board

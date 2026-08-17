@@ -3,6 +3,9 @@ idf_component_register(
         "setup_web.c"
         "status_web.c"
     INCLUDE_DIRS "include"
+    EMBED_TXTFILES
+        "assets/app.css"
+        "assets/app.js"
     REQUIRES
         config
         esp_http_server

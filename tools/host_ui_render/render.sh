@@ -30,6 +30,7 @@ fi
 cc "${cflags[@]}" -o "${out}/render_ui" "${here}/render_ui.c" \
   "${qr}/esp_qrcode_main.c" "${qr}/esp_qrcode_wrapper.c" "${qr}/qrcodegen.c" \
   "${project}/components/tracker/airtrack_tracker.c" \
+  "${project}/components/ui/ui_icons.c" \
   "${idf_dir}/components/json/cJSON/cJSON.c" -I"${idf_dir}/components/json/cJSON" \
   "${obj}/liblvgl_host.a" -lm
 "${out}/render_ui" "${out}"

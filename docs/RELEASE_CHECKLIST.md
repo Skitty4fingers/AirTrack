@@ -1,4 +1,4 @@
-# AirTrack 1.1.0 release checklist
+# AirTrack 1.2.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,12 +10,17 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,717,408 bytes (1.1.0 adds ~190 KiB
-  of Montserrat fonts; both 3,904 KiB OTA slots retain 57 percent free).
+- [x] Image is below the 3.5 MiB gate: 1,737,776 bytes (both 3,904 KiB OTA
+  slots retain 57 percent free).
 - [x] Artifact SHA-256:
-  `3710cc5c52dede69a28bd615ad948a4b87acb4ab7f84cdb7f2c4ed8dee36260c`.
+  `f1a772a17ee1ff30efa9cbc2c8fdded9d23d21f0154f2d67914f500ff0dbdb67`.
 - [x] Host LCD render (`tools/host_ui_render/render.sh`) reviewed for the
-  live, stale, emergency, empty, no-Wi-Fi, and both setup screens.
+  live, stale, emergency, empty, no-Wi-Fi, and both setup screens against
+  `docs/ui/device-states-concept-v2.png`.
+- [x] Dashboard reviewed in headless Chromium at 1400 px and 420 px widths
+  against `docs/ui/web-configurator-concept.png`; settings save round trip
+  (CSRF rejection, live apply of radius/units/brightness, revert, unknown-field
+  rejection, no-JS redirect) verified with curl on the connected unit.
 - [x] Connected hardware identified as ESP32-C6FH8 revision 0.2 with 8 MB
   flash before installation.
 - [x] Existing NVS was backed up before the first 1.0.0 installation; the
@@ -58,7 +63,7 @@ the physical device, its real fixed location, or elapsed soak time.
 ## Deliberately deferred from 1.0.0
 
 - Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.1.0 updates use native USB.
+  but 1.2.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.

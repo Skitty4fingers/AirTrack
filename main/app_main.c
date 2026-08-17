@@ -103,6 +103,29 @@ static esp_err_t launch_settings_restart(void)
     return task != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+/*
+ * Settings are read by the supervisor every cycle and written by the LAN
+ * dashboard from the HTTP task, so hand-offs go through a short critical
+ * section and the supervisor works from a per-cycle copy.
+ */
+static portMUX_TYPE s_settings_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static airtrack_settings_t settings_snapshot(void)
+{
+    airtrack_settings_t copy;
+    taskENTER_CRITICAL(&s_settings_lock);
+    copy = s_settings;
+    taskEXIT_CRITICAL(&s_settings_lock);
+    return copy;
+}
+
+static void settings_publish(const airtrack_settings_t *updated)
+{
+    taskENTER_CRITICAL(&s_settings_lock);
+    s_settings = *updated;
+    taskEXIT_CRITICAL(&s_settings_lock);
+}
+
 static esp_err_t save_device_settings(const setup_web_submission_t *submission,
                                       void *user_context)
 {
@@ -111,13 +134,14 @@ static esp_err_t save_device_settings(const setup_web_submission_t *submission,
         return ESP_ERR_INVALID_STATE;
     }
 
+    const airtrack_settings_t current = settings_snapshot();
     airtrack_settings_t updated = submission->settings;
     /* Hostname and retention are not user-editable from the form. */
-    memcpy(updated.hostname, s_settings.hostname, sizeof(updated.hostname));
-    updated.retention_days = s_settings.retention_days;
-    updated.retention_mib = s_settings.retention_mib;
-    updated.log_heartbeat_s = s_settings.log_heartbeat_s;
-    updated.max_position_age_s = s_settings.max_position_age_s;
+    memcpy(updated.hostname, current.hostname, sizeof(updated.hostname));
+    updated.retention_days = current.retention_days;
+    updated.retention_mib = current.retention_mib;
+    updated.log_heartbeat_s = current.log_heartbeat_s;
+    updated.max_position_age_s = current.max_position_age_s;
     esp_err_t err = airtrack_settings_validate(&updated);
     if (err == ESP_OK) {
         err = airtrack_config_save_settings(&updated);
@@ -139,34 +163,62 @@ static esp_err_t save_device_settings(const setup_web_submission_t *submission,
     return ESP_OK;
 }
 
-static esp_err_t save_initial_location(int32_t latitude_e7,
-                                       int32_t longitude_e7,
-                                       uint16_t radius_nm,
-                                       void *user_context)
+/*
+ * Apply tracker/display settings posted from the LAN dashboard without a
+ * restart: persist first, then push the record to every consumer.  Only
+ * user-editable fields are taken from the request; hostname and retention
+ * limits keep their stored values.
+ */
+static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
+                                         void *user_context)
 {
     (void)user_context;
-    if (s_settings.location_configured || !claim_settings_restart()) {
-        return ESP_ERR_INVALID_STATE;
+    if (requested == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    airtrack_settings_t updated = s_settings;
-    updated.location_configured = true;
-    updated.latitude_e7 = latitude_e7;
-    updated.longitude_e7 = longitude_e7;
-    updated.radius_nm = radius_nm;
+    airtrack_settings_t updated = settings_snapshot();
+    updated.location_configured = requested->location_configured;
+    updated.latitude_e7 = requested->latitude_e7;
+    updated.longitude_e7 = requested->longitude_e7;
+    updated.radius_nm = requested->radius_nm;
+    updated.poll_interval_s = requested->poll_interval_s;
+    updated.include_ground = requested->include_ground;
+    updated.distance_unit = requested->distance_unit;
+    updated.brightness_percent = requested->brightness_percent;
+    updated.logging_mode = requested->logging_mode;
     esp_err_t err = airtrack_settings_validate(&updated);
     if (err == ESP_OK) {
         err = airtrack_config_save_settings(&updated);
     }
-    if (err == ESP_OK) {
-        err = launch_settings_restart();
+    if (err != ESP_OK) {
+        return err;
     }
+    airtrack_settings_t stored;
+    if (airtrack_config_load_settings(&stored) == ESP_OK) {
+        updated = stored; /* pick up the new generation number */
+    }
+    settings_publish(&updated);
+    *requested = updated;
+    (void)board_backlight_set(updated.brightness_percent);
+    (void)adsb_client_update_settings(&updated);
+    (void)storage_logger_update_settings(&updated);
+    ESP_LOGI(TAG, "Dashboard settings applied (generation %llu)",
+             (unsigned long long)updated.generation);
+    return ESP_OK;
+}
+
+static esp_err_t reboot_from_dashboard(void *user_context)
+{
+    (void)user_context;
+    if (!claim_settings_restart()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = launch_settings_restart();
     if (err != ESP_OK) {
         release_settings_restart();
         return err;
     }
-
-    ESP_LOGI(TAG, "Initial tracking location saved; restart scheduled");
+    ESP_LOGI(TAG, "Restart requested from the dashboard");
     return ESP_OK;
 }
 
@@ -213,7 +265,8 @@ static size_t scan_nearby_networks(void)
 
 static status_web_snapshot_t make_status_web_snapshot(
     const connectivity_status_t *status,
-    const airtrack_snapshot_t *aircraft)
+    const airtrack_snapshot_t *aircraft,
+    const airtrack_settings_t *settings)
 {
     adsb_client_stats_t stats = {0};
     (void)adsb_client_get_stats(&stats);
@@ -235,7 +288,7 @@ static status_web_snapshot_t make_status_web_snapshot(
         .polls_ok = stats.polls_ok,
         .polls_failed = stats.polls_failed,
         .tls_connections = stats.connections,
-        .settings = &s_settings,
+        .settings = settings,
         .aircraft = aircraft,
     };
 }
@@ -354,6 +407,7 @@ static esp_err_t enter_setup_mode(setup_reason_t reason)
         return err;
     }
 
+    const airtrack_settings_t settings = settings_snapshot();
     const setup_web_config_t web_config = {
         .ap_ssid = s_config.ap_ssid,
         .ap_password = s_config.ap_password,
@@ -361,7 +415,7 @@ static esp_err_t enter_setup_mode(setup_reason_t reason)
         .nearby_networks = s_web_networks,
         .nearby_network_count = nearby_network_count,
         .current_ssid = s_config.wifi_configured ? s_config.wifi_ssid : NULL,
-        .current_settings = &s_settings,
+        .current_settings = &settings,
         .save_config = save_device_settings,
     };
     if (!setup_web_is_running()) {
@@ -421,7 +475,8 @@ static esp_err_t leave_setup_mode(void)
         first_error = err;
     }
     connectivity_set_reconnect_delay(CONNECTIVITY_DEFAULT_RECONNECT_DELAY_MS);
-    err = storage_logger_start(s_board_status.sd_mounted, &s_settings);
+    const airtrack_settings_t settings = settings_snapshot();
+    err = storage_logger_start(s_board_status.sd_mounted, &settings);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE &&
         first_error == ESP_OK) {
         first_error = err;
@@ -497,6 +552,7 @@ static setup_reason_t run_tracking_mode(void)
     for (;;) {
         connectivity_status_t status;
         ESP_ERROR_CHECK(connectivity_get_status(&status));
+        const airtrack_settings_t settings = settings_snapshot();
 
         const bool status_changed = !have_last ||
                                     status.connected != last_connected ||
@@ -550,7 +606,7 @@ static setup_reason_t run_tracking_mode(void)
                                                   UI_TRACKING_INTERVAL_MS))) {
             last_ui_update = xTaskGetTickCount();
             const ui_tracking_state_t tracking_state = {
-                .settings = &s_settings,
+                .settings = &settings,
                 .snapshot = &aircraft,
                 .ssid = status.ssid[0] != '\0' ? status.ssid : s_config.wifi_ssid,
                 .ip_address = status.connected ? status.ip_address : "--",
@@ -576,7 +632,7 @@ static setup_reason_t run_tracking_mode(void)
             }
         } else {
             const status_web_snapshot_t web_snapshot =
-                make_status_web_snapshot(&status, &aircraft);
+                make_status_web_snapshot(&status, &aircraft, &settings);
             if (status_web_is_running()) {
                 if (status_changed || snapshot_changed ||
                     interval_elapsed(last_web_update, UI_TRACKING_INTERVAL_MS)) {
@@ -592,7 +648,8 @@ static setup_reason_t run_tracking_mode(void)
                                         STATUS_WEB_RETRY_MS)) {
                 last_status_web_attempt = xTaskGetTickCount();
                 const esp_err_t web_result = status_web_start(
-                    &web_snapshot, save_initial_location, NULL);
+                    &web_snapshot, save_dashboard_settings,
+                    reboot_from_dashboard, NULL);
                 if (web_result != ESP_OK) {
                     ESP_LOGW(TAG, "Could not start LAN status server: %s",
                              esp_err_to_name(web_result));

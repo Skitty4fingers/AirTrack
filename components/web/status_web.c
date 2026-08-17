@@ -21,9 +21,9 @@
     (STATUS_WEB_IPV4_TEXT_MAX_BYTES + sizeof(":80"))
 #define STATUS_WEB_LOCATION_MAX_BYTES \
     (sizeof("http://") - 1U + STATUS_WEB_IPV4_TEXT_MAX_BYTES + \
-     sizeof("/api/v1/config/location"))
+     sizeof("/api/v1/aircraft"))
 #define STATUS_WEB_CSRF_BYTES 32U
-#define STATUS_WEB_FORM_MAX_BYTES 256U
+#define STATUS_WEB_FORM_MAX_BYTES 512U
 
 static const char *TAG = "status_web";
 
@@ -49,7 +49,8 @@ typedef struct {
 
 static httpd_handle_t s_server;
 static status_web_snapshot_storage_t s_snapshot;
-static status_web_save_location_cb_t s_save_location;
+static status_web_save_settings_cb_t s_save_settings;
+static status_web_reboot_cb_t s_reboot;
 static void *s_user_context;
 static char s_csrf_token[STATUS_WEB_CSRF_BYTES + 1U];
 static portMUX_TYPE s_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -73,136 +74,86 @@ static void make_csrf_token(void)
     memset(random, 0, sizeof(random));
 }
 
+extern const char app_css_start[] asm("_binary_app_css_start");
+extern const char app_css_end[] asm("_binary_app_css_end");
+extern const char app_js_start[] asm("_binary_app_js_start");
+extern const char app_js_end[] asm("_binary_app_js_end");
+
+/* Inline SVG icons (Material-style paths), fill = currentColor. */
+#define ICON_PLANE "<svg viewBox=\"0 0 24 24\"><path d=\"M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z\"/></svg>"
+#define ICON_HOME "<svg viewBox=\"0 0 24 24\"><path d=\"M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z\"/></svg>"
+#define ICON_PIN "<svg viewBox=\"0 0 24 24\"><path d=\"M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z\"/></svg>"
+#define ICON_MONITOR "<svg viewBox=\"0 0 24 24\"><path d=\"M21 2H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H8v2h8v-2h-2v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H3V4h18z\"/></svg>"
+#define ICON_SD "<svg viewBox=\"0 0 24 24\"><path d=\"M18 2h-8L4 8v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-6 6H10V4h2zm3 0h-2V4h2zm3 0h-2V4h2z\"/></svg>"
+#define ICON_GEAR "<svg viewBox=\"0 0 24 24\"><path d=\"M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 0-.5.4L9 5.1a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1a7.3 7.3 0 0 0 1.7 1l.4 2.6c0 .3.2.5.5.5h4c.3 0 .5-.2.5-.5l.4-2.6a7.3 7.3 0 0 0 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z\"/></svg>"
+#define ICON_WIFI "<svg viewBox=\"0 0 24 24\"><path d=\"M12 21l3.5-4.7a5.9 5.9 0 0 0-7 0zm0-9a10 10 0 0 0-6.4 2.3l1.8 2.4a7 7 0 0 1 9.2 0l1.8-2.4A10 10 0 0 0 12 12zm0-6A16 16 0 0 0 1.5 9.9l1.8 2.4a13 13 0 0 1 17.4 0l1.8-2.4A16 16 0 0 0 12 6z\"/></svg>"
+#define ICON_CLOUD "<svg viewBox=\"0 0 24 24\"><path d=\"M19.4 10A7.5 7.5 0 0 0 5.4 8 6 6 0 0 0 6 20h13a5 5 0 0 0 .4-10z\"/></svg>"
+#define ICON_CLOCK "<svg viewBox=\"0 0 24 24\"><path d=\"M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7z\"/></svg>"
+#define ICON_NAV "<svg viewBox=\"0 0 24 24\"><path d=\"M21 3 3 10.5v1l7.5 2 2 7.5h1z\"/></svg>"
+#define ICON_MTN "<svg viewBox=\"0 0 24 24\"><path d=\"m14 6-3.8 5 2.9 3.8-1.6 1.2C9.6 13.5 7 10 7 10l-6 8h22z\"/></svg>"
+#define ICON_GAUGE "<svg viewBox=\"0 0 24 24\"><path d=\"M12 4a10 10 0 0 0-8.7 15h17.4A10 10 0 0 0 12 4zm0 2a8 8 0 0 1 8 8 8 8 0 0 1-.9 3.7L13 13.5a1.5 1.5 0 0 0-1.9-1.9L7.7 8.2A7.9 7.9 0 0 1 12 6zM6.4 9.5l3.2 3.2a1.5 1.5 0 0 0 1.4 1.8l5.6 4.5H4.9A8 8 0 0 1 6.4 9.5z\"/></svg>"
+#define ICON_SAVE "<svg viewBox=\"0 0 24 24\"><path d=\"M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10z\"/></svg>"
+
 static const char PAGE_HEAD[] =
     "<!doctype html><html lang=en><head><meta charset=utf-8>"
     "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-    "<title>AirTrack</title><style>"
-    ":root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;"
-    "background:#071017;color:#eef8fb}*{box-sizing:border-box}"
-    "body{margin:0;min-height:100vh;display:grid;place-items:start center;padding:20px;"
-    "background:radial-gradient(circle at top,#173544,#071017 58%)}"
-    "main{width:min(100%,520px)}h1{font-size:1.9rem;letter-spacing:.04em;"
-    "margin:.15em 0}h2{margin:.2em 0 .4em;font-size:1.7rem;overflow-wrap:anywhere}"
-    ".eyebrow{color:#63e6be;font-weight:750;letter-spacing:.18em;"
-    "font-size:.74rem;display:flex;justify-content:space-between;align-items:center}"
-    ".lead{color:#b9cbd2;line-height:1.5;margin:.4rem 0 1.2rem}"
-    ".card{background:#0e2029;border:1px solid #28414c;border-radius:18px;"
-    "padding:18px;box-shadow:0 20px 60px #0008;margin:12px 0}"
-    ".grid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 16px;"
-    "align-items:baseline}.grid span{color:#8faab5}.grid strong,.grid code{"
-    "overflow-wrap:anywhere;color:#fff}.ok{color:#63e6be!important}"
-    ".big{font-size:2.6rem;font-weight:800;color:#63e6be;line-height:1.1;margin:4px 0}"
-    ".meta{color:#8faab5;margin:0 0 10px}"
-    ".pill{font-size:.7rem;letter-spacing:.12em;padding:3px 9px;border-radius:99px;"
-    "background:#38535f;color:#fff}.pill.live{background:#63e6be;color:#05241c}"
-    ".pill.stale,.pill.config_required{background:#ffb454;color:#2b1a00}"
-    ".pill.offline{background:#ff647c;color:#2b0009}"
-    ".pill.empty,.pill.searching,.pill.time_sync{background:#55d9f3;color:#062231}"
-    "table{width:100%;border-collapse:collapse;font-size:.88rem;margin-top:8px}"
-    "th{text-align:left;color:#8faab5;font-weight:600;padding:4px 6px 6px 0}"
-    "td{padding:5px 6px 5px 0;border-top:1px solid #1c3039;white-space:nowrap}"
-    "td:first-child{color:#fff;font-weight:700}tr.emergency td{color:#ff647c}"
-    "label{display:block;color:#b9cbd2;font-size:.84rem;margin:12px 0 5px}"
-    "input{width:100%;padding:11px;border:1px solid #38535f;border-radius:10px;"
-    "font:inherit;color:#fff;background:#07141a}button{width:100%;margin-top:16px;"
-    "padding:12px;border:0;border-radius:10px;font:inherit;font-weight:800;"
-    "color:#05241c;background:#63e6be}"
-    ".hint,footer{color:#8faab5;font-size:.8rem;line-height:1.5}"
-    "footer{text-align:center;margin-top:15px}footer strong{color:#b9cbd2}"
-    "[hidden]{display:none!important}"
-    "</style></head><body><main><div class=eyebrow>LOCAL STATUS</div>"
-    "<h1>AirTrack</h1><p class=lead>Nearest aircraft to this display, refreshed "
-    "every few seconds from adsb.fi.</p>";
-
-static const char PAGE_NETWORK[] =
-    "<section class=card><div class=eyebrow>NETWORK &amp; SYSTEM</div><div class=grid>"
-    "<span>Status</span><strong class=ok>Connected</strong>"
-    "<span>SSID</span><strong>";
+    "<title>AirTrack</title><link rel=stylesheet href=/app.css></head><body>"
+    "<aside class=side><div class=brand>" ICON_PLANE "AirTrack</div><nav>"
+    "<a href=#dashboard class=active>" ICON_HOME "Dashboard</a>"
+    "<a href=#location>" ICON_PIN "Location</a>"
+    "<a href=#display>" ICON_MONITOR "Display</a>"
+    "<a href=#storage>" ICON_SD "Storage</a>"
+    "<a href=#system>" ICON_GEAR "System</a></nav></aside>"
+    "<div class=page><header class=top>"
+    "<span class=st><i class=dot></i><b class=ok>ONLINE</b></span>"
+    "<span class=st>" ICON_WIFI "Wi-Fi <b id=ssid>";
 
 static const char PAGE_AFTER_SSID[] =
-    "</strong><span>Address</span><code>";
+    "</b></span><span class=st>" ICON_CLOUD "<b id=api class=\"";
 
-static const char PAGE_AFTER_IP[] =
-    "</code><span>Signal</span><strong id=rssi>";
+static const char PAGE_AFTER_API[] =
+    "</b></span><span class=st>" ICON_CLOCK "Updated <b id=upd>";
 
-static const char PAGE_AFTER_SIGNAL[] =
-    "</strong><span>Uptime</span><strong id=uptime>";
+static const char PAGE_MAIN_START[] =
+    "</b></span></header><main>";
 
-static const char PAGE_AFTER_UPTIME[] =
-    "</strong><span>Feed polls</span><strong id=polls>";
+static const char PAGE_FORM_START[] =
+    "<form id=cfg method=post action=/api/v1/config autocomplete=off>"
+    "<input type=hidden name=csrf_token value=\"";
 
-static const char PAGE_AFTER_POLLS[] =
-    "</strong><span>Heap</span><strong id=heap>";
+static const char PAGE_GRID_START[] =
+    "\"><div class=grid><div class=col>"
+    "<section class=card id=dashboard><h2>Nearest aircraft</h2>";
 
-static const char PAGE_AFTER_HEAP[] =
-    "</strong><span>Firmware</span><strong>";
+/* SVG compass; the arrow/plane/arc are re-oriented by the script. */
+static const char PAGE_COMPASS[] =
+    "<div id=target class=nearest><svg class=compass viewBox=\"0 0 120 120\">"
+    "<circle class=ring cx=60 cy=60 r=54 />"
+    "<g class=tick><line x1=60 y1=6 x2=60 y2=14 class=major />"
+    "<line x1=114 y1=60 x2=106 y2=60 class=major /><line x1=60 y1=114 x2=60 y2=106 class=major />"
+    "<line x1=6 y1=60 x2=14 y2=60 class=major />"
+    "<line x1=87 y1=13.2 x2=84.5 y2=17.6 /><line x1=106.8 y1=33 x2=102.4 y2=35.5 />"
+    "<line x1=106.8 y1=87 x2=102.4 y2=84.5 /><line x1=87 y1=106.8 x2=84.5 y2=102.4 />"
+    "<line x1=33 y1=106.8 x2=35.5 y2=102.4 /><line x1=13.2 y1=87 x2=17.6 y2=84.5 />"
+    "<line x1=13.2 y1=33 x2=17.6 y2=35.5 /><line x1=33 y1=13.2 x2=35.5 y2=17.6 /></g>"
+    "<text x=60 y=23>N</text><text x=97 y=60.5>E</text><text x=60 y=98>S</text><text x=23 y=60.5>W</text>";
 
-static const char PAGE_AFTER_VERSION[] =
-    "</strong><span>SD card</span><strong id=sd>";
+static const char PAGE_COMPASS_TAIL[] =
+    "<path d=\"M60 41l3 4 1 11 18 11v4l-18-6-1 10 6 5v3l-9-2-9 2v-3l6-5-1-10-18 6v-4l18-11 1-11z\"/></g>"
+    "</svg><div class=who><div class=cs id=id>";
 
-static const char PAGE_AFTER_SD[] =
-    "</strong><span>Flash</span><strong>";
+static const char PAGE_FACTS_END[] =
+    "</ul></div></div>";
 
-static const char PAGE_TAIL[] =
-    "</strong></div></section>";
+static const char PAGE_TABLE_HEAD[] =
+    "<div class=tbl><table><thead><tr><th>Aircraft</th><th>Type</th><th>Distance</th>"
+    "<th>Bearing</th><th>Altitude</th><th>Speed</th><th>Squawk</th></tr></thead>"
+    "<tbody id=rows>";
 
 static const char PAGE_FOOTER[] =
-    "<footer><strong>Data: <a href=https://adsb.fi>adsb.fi</a></strong><br>"
-    "Personal, non-commercial use. Not for navigation or collision "
-    "avoidance.</footer></main><script src=/app.js></script></body></html>";
-
-/*
- * Dashboard script served from /app.js so the CSP can stay at
- * script-src 'self' without inline code.  It only reads the two JSON
- * endpoints on this origin and rewrites text content; no HTML is injected.
- */
-static const char APP_JS[] =
-    "(function(){"
-    "function $(i){return document.getElementById(i)}"
-    "function t(i,v){var e=$(i);if(e&&e.textContent!==String(v))e.textContent=v}"
-    "function p3(v){v=Math.round(v)%360;return (v<100?(v<10?'00':'0'):'')+v}"
-    "function up(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),"
-    "m=Math.floor(s%3600/60);return (d?d+'d ':'')+h+'h '+m+'m'}"
-    "var unit='NM',f=1;"
-    "function dist(nm){return (nm*f).toFixed(1)+' '+unit}"
-    "function alt(a){return a.ground?'ground':a.altitude_valid?"
-    "a.altitude_ft.toLocaleString()+' ft':'--'}"
-    "function name(a){return a.callsign||a.registration||a.hex}"
-    "function vs(a){if(!a.vertical_rate_valid||a.ground)return '--';var r=a."
-    "vertical_rate_fpm;return (r>0?'\\u25B2 ':r<0?'\\u25BC ':'')+Math.abs(r)+' fpm'}"
-    "function air(j){unit=j.unit||'NM';f=unit==='km'?1.852:unit==='mi'?1.150779:1;"
-    "var s=$('state');if(s){s.textContent=j.state.replace('_',' ').toUpperCase();"
-    "s.className='pill '+j.state}"
-    "var l=j.aircraft||[],tg=$('target'),em=$('empty');"
-    "if(l.length){var a=l[0];t('id',name(a));t('meta',[a.registration!==name(a)?"
-    "a.registration:'',a.type,a.emergency?'EMERGENCY':''].filter(Boolean).join(' \\u00B7 '));"
-    "t('dist',dist(a.distance_nm));t('brg',p3(a.bearing_deg)+'\\u00B0 true');"
-    "t('alt',alt(a));t('vs',vs(a));t('spd',a.speed_valid?a.ground_speed_kt."
-    "toFixed(0)+' kt':'--');t('trk',a.track_valid?p3(a.track_deg)+'\\u00B0':'--');"
-    "t('sqk',a.squawk||'--');t('age',a.age_s.toFixed(0)+' s');"
-    "if(tg)tg.hidden=false;if(em)em.hidden=true}"
-    "else{if(tg)tg.hidden=true;if(em)em.hidden=false;"
-    "t('ehead',j.state==='empty'?'No recent aircraft':j.state==='config_required'?"
-    "'Set tracking location':'Waiting for aircraft data');"
-    "t('esub','Feed: '+j.state+(j.error!=='none'?' \\u00B7 '+j.error:''))}"
-    "var tb=$('rows');if(tb){while(tb.firstChild)tb.removeChild(tb.firstChild);"
-    "l.forEach(function(a){var tr=document.createElement('tr');"
-    "[name(a),a.type||'',dist(a.distance_nm),p3(a.bearing_deg)+'\\u00B0',alt(a),"
-    "a.speed_valid?a.ground_speed_kt.toFixed(0)+' kt':'--'].forEach(function(v){"
-    "var td=document.createElement('td');td.textContent=v;tr.appendChild(td)});"
-    "if(a.emergency)tr.className='emergency';tb.appendChild(tr)})}"
-    "t('counts',j.accepted+' shown of '+j.reported+' reports within '+j.radius_nm+"
-    "' NM'+(j.last_success_age_s!==null?' \\u00B7 updated '+j.last_success_age_s+' s ago':''))}"
-    "function st(j){t('rssi',j.rssi_dbm===null?'Unavailable':j.rssi_dbm+' dBm');"
-    "t('uptime',up(j.uptime_s));t('heap',(j.free_heap_bytes/1024).toFixed(0)+"
-    "' KiB free \\u00B7 min '+(j.minimum_free_heap_bytes/1024).toFixed(0)+' KiB');"
-    "t('polls',j.polls_ok+' ok \\u00B7 '+j.polls_failed+' failed \\u00B7 '+"
-    "j.tls_connections+' TLS');t('sd',j.sd_mounted?(j.sd_logging?'Logging ('+"
-    "j.sd_records+' records)':'Mounted, logging off'):'Unavailable')}"
-    "function get(u,cb){fetch(u,{cache:'no-store'}).then(function(r){return r.json()})"
-    ".then(cb).catch(function(){})}"
-    "function tick(){get('/api/v1/aircraft',air);get('/api/v1/status',st)}"
-    "tick();setInterval(tick,2000);})();";
+    "<footer>Data provided by <a href=https://adsb.fi>adsb.fi</a> &middot; "
+    "Personal, non-commercial use. Not for navigation or collision avoidance."
+    "</footer></main></div><script src=/app.js></script></body></html>";
 
 static SemaphoreHandle_t lifecycle_lock(void)
 {
@@ -420,7 +371,7 @@ static esp_err_t set_security_headers(httpd_req_t *request)
     if (result == ESP_OK) {
         result = httpd_resp_set_hdr(
             request, "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; "
+            "default-src 'none'; style-src 'self'; script-src 'self'; "
             "connect-src 'self'; form-action 'self'; base-uri 'none'; "
             "frame-ancestors 'none'");
     }
@@ -658,10 +609,10 @@ static esp_err_t send_aircraft_row(httpd_req_t *request,
         result = send_html_escaped(request, aircraft->aircraft_type);
     }
     if (result == ESP_OK) {
-        char cells[128];
+        char cells[160];
         char altitude[24];
         if (aircraft->ground) {
-            memcpy(altitude, "ground", sizeof("ground"));
+            memcpy(altitude, "on the ground", sizeof("on the ground"));
         } else if (aircraft->altitude_valid) {
             (void)snprintf(altitude, sizeof(altitude), "%ld ft",
                            (long)aircraft->altitude_ft);
@@ -677,7 +628,7 @@ static esp_err_t send_aircraft_row(httpd_req_t *request,
         }
         const int length = snprintf(
             cells, sizeof(cells),
-            "</td><td>%.1f %s</td><td>%03.0f&deg;</td><td>%s</td><td>%s</td></tr>",
+            "</td><td>%.1f %s</td><td>%03.0f&deg;</td><td>%s</td><td>%s</td><td>",
             (double)display_distance(aircraft->distance_nm,
                                      snapshot->settings.distance_unit),
             distance_suffix(snapshot->settings.distance_unit),
@@ -686,168 +637,222 @@ static esp_err_t send_aircraft_row(httpd_req_t *request,
                      ? ESP_ERR_INVALID_SIZE
                      : httpd_resp_send_chunk(request, cells, (size_t)length);
     }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, aircraft->squawk);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</td></tr>");
+    }
     return result;
 }
 
-static esp_err_t send_tracking_cards(
-    httpd_req_t *request, const status_web_snapshot_storage_t *snapshot)
+static const char *cardinal_name(float bearing_deg)
 {
-    esp_err_t result = send_html_chunk(request,
-        "<section class=card><div class=eyebrow><span>NEAREST AIRCRAFT</span>"
-        "<span id=state class=\"pill ");
-    if (result == ESP_OK) {
-        result = send_html_chunk(request,
-            airtrack_feed_state_name(snapshot->aircraft.state));
+    static const char *names[] = {
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+        "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    };
+    float normalized = bearing_deg;
+    while (normalized < 0.0f) {
+        normalized += 360.0f;
     }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request, "\">");
+    while (normalized >= 360.0f) {
+        normalized -= 360.0f;
     }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request,
-            airtrack_feed_state_name(snapshot->aircraft.state));
-    }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request, "</span></div>");
-    }
-    if (result != ESP_OK) {
-        return result;
-    }
-    if (!snapshot->settings.location_configured) {
-        result = send_html_chunk(request,
-            "<h2>Set tracking location</h2><p class=hint>Enter this display's "
-            "fixed decimal-degree coordinates. Wi-Fi credentials cannot be "
-            "viewed or changed here.</p><form method=post "
-            "action=/api/v1/config/location autocomplete=off>"
-            "<input type=hidden name=csrf_token value=\"");
-        if (result == ESP_OK) {
-            result = send_html_escaped(request, s_csrf_token);
-        }
-        if (result == ESP_OK) {
-            result = send_html_chunk(request,
-                "\"><label for=latitude>Latitude</label>"
-                "<input id=latitude name=latitude type=number step=any min=-90 "
-                "max=90 placeholder=37.6213 required>"
-                "<label for=longitude>Longitude</label>"
-                "<input id=longitude name=longitude type=number step=any "
-                "min=-180 max=180 placeholder=-122.3790 required>"
-                "<label for=radius>Radius (nautical miles)</label>"
-                "<input id=radius name=radius type=number min=1 max=250 "
-                "value=25 required><button type=submit>Start tracking</button>"
-                "</form></section>");
-        }
-        return result;
-    }
+    return names[(unsigned)((normalized + 11.25f) / 22.5f) % 16U];
+}
 
+static const char *api_class(airtrack_feed_state_t state)
+{
+    switch (state) {
+    case AIRTRACK_FEED_LIVE:
+    case AIRTRACK_FEED_EMPTY:
+        return "ok";
+    case AIRTRACK_FEED_OFFLINE:
+        return "bad";
+    case AIRTRACK_FEED_SEARCHING:
+        return "";
+    default:
+        return "warn";
+    }
+}
+
+static const char *api_text(airtrack_feed_state_t state)
+{
+    switch (state) {
+    case AIRTRACK_FEED_LIVE:
+    case AIRTRACK_FEED_EMPTY:
+        return "API OK";
+    case AIRTRACK_FEED_STALE:
+        return "API STALE";
+    case AIRTRACK_FEED_OFFLINE:
+        return "API OFFLINE";
+    case AIRTRACK_FEED_TIME_SYNC:
+        return "TIME SYNC";
+    case AIRTRACK_FEED_CONFIG_REQUIRED:
+        return "SET LOCATION";
+    default:
+        return "API ...";
+    }
+}
+
+static esp_err_t send_chunk_or_size(httpd_req_t *request, const char *text,
+                                    int length, size_t capacity)
+{
+    if (length < 0 || (size_t)length >= capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return httpd_resp_send_chunk(request, text, (size_t)length);
+}
+
+static esp_err_t send_nearest_card(httpd_req_t *request,
+                                   const status_web_snapshot_storage_t *snapshot)
+{
     const bool have_target = snapshot->aircraft.aircraft_count > 0U;
     const airtrack_aircraft_t *aircraft = &snapshot->aircraft.aircraft[0];
+    esp_err_t result = ESP_OK;
+    char text[1024];
 
-    /* Empty-state block (hidden while a target exists). */
-    char message[200];
-    int length = snprintf(
-        message, sizeof(message),
-        "<div id=empty%s><h2 id=ehead>%s</h2><p id=esub class=hint>Feed: %s%s%s</p></div>",
-        have_target ? " hidden" : "",
-        snapshot->aircraft.state == AIRTRACK_FEED_EMPTY
-            ? "No recent aircraft" : "Waiting for aircraft data",
-        airtrack_feed_state_name(snapshot->aircraft.state),
-        snapshot->aircraft.error != AIRTRACK_ERROR_NONE ? " &middot; " : "",
-        snapshot->aircraft.error != AIRTRACK_ERROR_NONE
-            ? airtrack_feed_error_name(snapshot->aircraft.error) : "");
-    result = (length < 0 || (size_t)length >= sizeof(message))
-                 ? ESP_ERR_INVALID_SIZE
-                 : httpd_resp_send_chunk(request, message, (size_t)length);
-
-    /* Target block (hidden while empty). */
-    if (result == ESP_OK) {
+    if (!snapshot->settings.location_configured) {
         result = send_html_chunk(request,
-            have_target ? "<div id=target><h2 id=id>" : "<div id=target hidden><h2 id=id>");
+            "<div class=banner>Enter this display's fixed location under "
+            "<b>Location</b> and save to start tracking.</div>");
+    }
+
+    /* Empty-state block. */
+    if (result == ESP_OK) {
+        const int length = snprintf(
+            text, sizeof(text),
+            "<div id=empty%s><p id=ehead class=big-empty>%s</p><p id=esub class=sub>"
+            "within %u NM &middot; feed %s%s%s</p></div>",
+            have_target ? " hidden" : "",
+            snapshot->aircraft.state == AIRTRACK_FEED_EMPTY ? "No recent reports"
+            : snapshot->aircraft.state == AIRTRACK_FEED_CONFIG_REQUIRED
+                ? "Set the tracking location to start"
+                : "Waiting for aircraft data",
+            (unsigned)snapshot->settings.radius_nm,
+            airtrack_feed_state_name(snapshot->aircraft.state),
+            snapshot->aircraft.error != AIRTRACK_ERROR_NONE ? " &middot; " : "",
+            snapshot->aircraft.error != AIRTRACK_ERROR_NONE
+                ? airtrack_feed_error_name(snapshot->aircraft.error) : "");
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+
+    /* Compass + facts (kept in the DOM while empty so the script can reveal it). */
+    if (result == ESP_OK && !have_target) {
+        result = send_html_chunk(request, "<div hidden>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_COMPASS);
+    }
+    if (result == ESP_OK) {
+        const float bearing = have_target ? aircraft->bearing_deg : 0.0f;
+        const float track = have_target && aircraft->track_valid
+                                ? aircraft->track_deg : bearing;
+        const double s0 = (double)(bearing - 14.0f) * 3.14159265 / 180.0;
+        const double s1 = (double)(bearing + 14.0f) * 3.14159265 / 180.0;
+        const int length = snprintf(
+            text, sizeof(text),
+            "<path id=arc class=arc%s d=\"M%.1f,%.1f A54,54 0 0 1 %.1f,%.1f\"/>"
+            "<g id=arrow transform=\"rotate(%.1f 60 60)\"><line x1=60 y1=42 x2=60 y2=14 />"
+            "<polyline points=\"52,22 60,14 68,22\" /></g>"
+            "<g id=plane transform=\"rotate(%.1f 60 60)\">",
+            have_target ? "" : " hidden",
+            60.0 + 54.0 * sin(s0), 60.0 - 54.0 * cos(s0),
+            60.0 + 54.0 * sin(s1), 60.0 - 54.0 * cos(s1),
+            (double)bearing, (double)track);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_COMPASS_TAIL);
     }
     if (result == ESP_OK && have_target) {
         result = send_html_escaped(request, aircraft_identity(aircraft));
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, "</h2><p id=meta class=meta>");
+        result = send_html_chunk(request, "</div><div class=meta id=meta>");
     }
     if (result == ESP_OK && have_target) {
-        if (aircraft->registration[0] != '\0' &&
+        if (aircraft->aircraft_type[0] != '\0') {
+            result = send_html_escaped(request, aircraft->aircraft_type);
+        }
+        if (result == ESP_OK && aircraft->registration[0] != '\0' &&
             strcmp(aircraft->registration, aircraft_identity(aircraft)) != 0) {
-            result = send_html_escaped(request, aircraft->registration);
-            if (result == ESP_OK && aircraft->aircraft_type[0] != '\0') {
+            if (aircraft->aircraft_type[0] != '\0') {
                 result = send_html_chunk(request, " &middot; ");
             }
+            if (result == ESP_OK) {
+                result = send_html_escaped(request, aircraft->registration);
+            }
         }
-        if (result == ESP_OK) {
-            result = send_html_escaped(request, aircraft->aircraft_type);
+        if (result == ESP_OK && aircraft->emergency) {
+            result = send_html_chunk(request, " &middot; EMERGENCY ");
+            if (result == ESP_OK) {
+                result = send_html_escaped(request, aircraft->squawk);
+            }
         }
     }
     if (result == ESP_OK) {
-        char altitude[32];
-        char speed[32];
-        char vertical[32];
-        char track[16];
+        char altitude[64];
+        char speed[48];
         if (!have_target) {
             memcpy(altitude, "--", sizeof("--"));
             memcpy(speed, "--", sizeof("--"));
-            memcpy(vertical, "--", sizeof("--"));
-            memcpy(track, "--", sizeof("--"));
         } else {
+            char vertical[32] = "";
+            if (aircraft->vertical_rate_valid && !aircraft->ground) {
+                if (aircraft->vertical_rate_fpm == 0) {
+                    memcpy(vertical, " &middot; level", sizeof(" &middot; level"));
+                } else {
+                    (void)snprintf(vertical, sizeof(vertical),
+                                   " &middot; %s %ld fpm",
+                                   aircraft->vertical_rate_fpm > 0 ? "&uarr;" : "&darr;",
+                                   labs((long)aircraft->vertical_rate_fpm));
+                }
+            }
             if (aircraft->ground) {
-                memcpy(altitude, "ground", sizeof("ground"));
+                (void)snprintf(altitude, sizeof(altitude), "on the ground");
             } else if (aircraft->altitude_valid) {
-                (void)snprintf(altitude, sizeof(altitude), "%ld ft",
-                               (long)aircraft->altitude_ft);
+                (void)snprintf(altitude, sizeof(altitude), "%ld ft%s",
+                               (long)aircraft->altitude_ft, vertical);
             } else {
-                memcpy(altitude, "--", sizeof("--"));
+                (void)snprintf(altitude, sizeof(altitude), "--%s", vertical);
+            }
+            char track[24] = "";
+            if (aircraft->track_valid) {
+                (void)snprintf(track, sizeof(track), " &middot; trk %03.0f&deg;",
+                               (double)aircraft->track_deg);
             }
             if (aircraft->ground_speed_valid) {
-                (void)snprintf(speed, sizeof(speed), "%.0f kt",
-                               (double)aircraft->ground_speed_kt);
+                (void)snprintf(speed, sizeof(speed), "%.0f kt%s",
+                               (double)aircraft->ground_speed_kt, track);
             } else {
-                memcpy(speed, "--", sizeof("--"));
-            }
-            if (aircraft->vertical_rate_valid && !aircraft->ground) {
-                (void)snprintf(vertical, sizeof(vertical), "%+ld fpm",
-                               (long)aircraft->vertical_rate_fpm);
-            } else {
-                memcpy(vertical, "--", sizeof("--"));
-            }
-            if (aircraft->track_valid) {
-                (void)snprintf(track, sizeof(track), "%03.0f&deg;",
-                               (double)aircraft->track_deg);
-            } else {
-                memcpy(track, "--", sizeof("--"));
+                (void)snprintf(speed, sizeof(speed), "--%s", track);
             }
         }
-        char details[640];
-        length = snprintf(
-            details, sizeof(details),
-            "</p><div id=dist class=big>%.1f %s</div><div class=grid>"
-            "<span>Bearing</span><strong id=brg>%03.0f&deg; true</strong>"
-            "<span>Altitude</span><strong id=alt>%s</strong>"
-            "<span>Vertical rate</span><strong id=vs>%s</strong>"
-            "<span>Ground speed</span><strong id=spd>%s</strong>"
-            "<span>Track</span><strong id=trk>%s</strong>"
-            "<span>Squawk</span><strong id=sqk>%s</strong>"
-            "<span>Position age</span><strong id=age>%.0f s</strong></div></div>",
+        const int length = snprintf(
+            text, sizeof(text),
+            "</div><ul class=facts><li>" ICON_NAV "<span id=brg>%.1f %s &middot; %s &middot; %03.0f&deg;</span></li>"
+            "<li>" ICON_MTN "<span id=alt>%s</span></li>"
+            "<li>" ICON_GAUGE "<span id=spd>%s</span></li>",
             have_target ? (double)display_distance(
                 aircraft->distance_nm, snapshot->settings.distance_unit) : 0.0,
             distance_suffix(snapshot->settings.distance_unit),
+            have_target ? cardinal_name(aircraft->bearing_deg) : "--",
             have_target ? (double)aircraft->bearing_deg : 0.0,
-            altitude, vertical, speed, track,
-            have_target && aircraft->squawk[0] != '\0' ? aircraft->squawk : "--",
-            have_target ? current_position_age_s(snapshot, aircraft) : 0.0);
-        if (length < 0 || (size_t)length >= sizeof(details)) {
-            return ESP_ERR_INVALID_SIZE;
-        }
-        result = httpd_resp_send_chunk(request, details, (size_t)length);
+            altitude, speed);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FACTS_END);
+    }
+    if (result == ESP_OK && !have_target) {
+        result = send_html_chunk(request, "</div>");
     }
 
     /* Top-five table. */
     if (result == ESP_OK) {
-        result = send_html_chunk(request,
-            "<table><thead><tr><th>Aircraft</th><th>Type</th><th>Distance</th>"
-            "<th>Bearing</th><th>Altitude</th><th>Speed</th></tr></thead>"
-            "<tbody id=rows>");
+        result = send_html_chunk(request, PAGE_TABLE_HEAD);
     }
     for (size_t index = 0U;
          result == ESP_OK && index < snapshot->aircraft.aircraft_count; ++index) {
@@ -855,43 +860,229 @@ static esp_err_t send_tracking_cards(
                                    &snapshot->aircraft.aircraft[index]);
     }
     if (result == ESP_OK) {
-        length = snprintf(
-            message, sizeof(message),
-            "</tbody></table><p id=counts class=hint>%lu shown of %lu reports "
+        const int length = snprintf(
+            text, sizeof(text),
+            "</tbody></table></div><p id=counts class=hint>%lu shown of %lu reports "
             "within %u NM</p></section>",
             (unsigned long)snapshot->aircraft.aircraft_accepted,
             (unsigned long)snapshot->aircraft.aircraft_reported,
             (unsigned)snapshot->settings.radius_nm);
-        result = (length < 0 || (size_t)length >= sizeof(message))
-                     ? ESP_ERR_INVALID_SIZE
-                     : httpd_resp_send_chunk(request, message, (size_t)length);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    return result;
+}
+
+static esp_err_t send_option(httpd_req_t *request, const char *value,
+                             const char *label, bool selected)
+{
+    esp_err_t result = send_html_chunk(request, "<option value=");
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, value);
+    }
+    if (result == ESP_OK && selected) {
+        result = send_html_chunk(request, " selected");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, ">");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, label);
+    }
+    return result == ESP_OK ? send_html_chunk(request, "</option>") : result;
+}
+
+static esp_err_t send_settings_cards(httpd_req_t *request,
+                                     const status_web_snapshot_storage_t *snapshot)
+{
+    const airtrack_settings_t *settings = &snapshot->settings;
+    char text[1280];
+
+    /* Left column continues: display card. */
+    int length = snprintf(
+        text, sizeof(text),
+        "<section class=card id=display><h2>Display brightness "
+        "<span class=val id=brv>%u%%</span></h2>"
+        "<input type=range id=br name=brightness min=0 max=50 value=%u>"
+        "<div class=ticks><span>0%%</span><span>25%%</span><span>50%%</span></div>"
+        "<p class=hint>50%% is the hardware maximum for this panel.</p>"
+        "<h3>Distance units</h3><select name=units>",
+        (unsigned)settings->brightness_percent,
+        (unsigned)settings->brightness_percent);
+    esp_err_t result = send_chunk_or_size(request, text, length, sizeof(text));
+    if (result == ESP_OK) {
+        result = send_option(request, "nm", "Nautical miles",
+                             settings->distance_unit == AIRTRACK_DISTANCE_NM);
+    }
+    if (result == ESP_OK) {
+        result = send_option(request, "km", "Kilometres",
+                             settings->distance_unit == AIRTRACK_DISTANCE_KM);
+    }
+    if (result == ESP_OK) {
+        result = send_option(request, "mi", "Statute miles",
+                             settings->distance_unit == AIRTRACK_DISTANCE_MI);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</select></section></div><div class=col>");
     }
 
+    /* Right column: location, radius, filter, interval, storage, save. */
     if (result == ESP_OK) {
-        char settings[1024];
+        char latitude[24] = "";
+        char longitude[24] = "";
+        if (settings->location_configured) {
+            (void)snprintf(latitude, sizeof(latitude), "%.6f",
+                           (double)settings->latitude_e7 / 10000000.0);
+            (void)snprintf(longitude, sizeof(longitude), "%.6f",
+                           (double)settings->longitude_e7 / 10000000.0);
+        }
         length = snprintf(
-            settings, sizeof(settings),
-            "<section class=card><div class=eyebrow>TRACKING SETTINGS</div>"
-            "<div class=grid>"
-            "<span>Latitude</span><strong>%.6f</strong>"
-            "<span>Longitude</span><strong>%.6f</strong>"
-            "<span>Radius</span><strong>%u NM</strong>"
-            "<span>Poll interval</span><strong>%u s</strong>"
-            "<span>Ground aircraft</span><strong>%s</strong>"
-            "<span>Units</span><strong>%s</strong>"
-            "<span>Brightness</span><strong>%u%%</strong>"
-            "</div><p class=hint>Hold BOOT for five seconds to reopen secure "
-            "setup and change Wi-Fi, location, or these options.</p></section>",
-            (double)snapshot->settings.latitude_e7 / 10000000.0,
-            (double)snapshot->settings.longitude_e7 / 10000000.0,
-            (unsigned)snapshot->settings.radius_nm,
-            (unsigned)snapshot->settings.poll_interval_s,
-            snapshot->settings.include_ground ? "Included" : "Excluded",
-            distance_suffix(snapshot->settings.distance_unit),
-            (unsigned)snapshot->settings.brightness_percent);
-        result = (length < 0 || (size_t)length >= sizeof(settings))
-                     ? ESP_ERR_INVALID_SIZE
-                     : httpd_resp_send_chunk(request, settings, (size_t)length);
+            text, sizeof(text),
+            "<section class=card id=location><h2>Search location</h2><div class=two>"
+            "<label class=field>Latitude<input name=latitude type=number step=any "
+            "min=-90 max=90 placeholder=37.62131 required value=\"%s\"></label>"
+            "<label class=field>Longitude<input name=longitude type=number step=any "
+            "min=-180 max=180 placeholder=-122.37896 required value=\"%s\"></label>"
+            "</div><p class=hint>Fixed decimal-degree position of this display; "
+            "used only to request nearby traffic from adsb.fi.</p></section>"
+            "<section class=card><h2>Search radius</h2><div class=range-row>"
+            "<input type=range id=rad min=1 max=250 value=%u>"
+            "<input type=number id=radn name=radius min=1 max=250 value=%u required>"
+            "<span>NM</span></div><div class=ticks><span>1</span><span>50</span>"
+            "<span>100</span><span>150</span><span>200</span><span>250</span></div>"
+            "</section>",
+            latitude, longitude, (unsigned)settings->radius_nm,
+            (unsigned)settings->radius_nm);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        length = snprintf(
+            text, sizeof(text),
+            "<section class=card><div class=row><div><h2>Aircraft filter</h2>"
+            "<p class=sub>Airborne only &middot; hide aircraft reporting on the ground</p>"
+            "</div><label class=switch><input type=checkbox name=airborne value=1%s><i></i>"
+            "</label></div></section>"
+            "<section class=card><h2>Refresh interval</h2><select name=poll>",
+            settings->include_ground ? "" : " checked");
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    static const struct {
+        const char *value;
+        const char *label;
+        uint16_t seconds;
+    } intervals[] = {
+        {"2", "2 seconds", 2}, {"5", "5 seconds", 5}, {"10", "10 seconds", 10},
+        {"15", "15 seconds", 15}, {"30", "30 seconds", 30}, {"60", "1 minute", 60},
+        {"300", "5 minutes", 300},
+    };
+    bool matched = false;
+    for (size_t index = 0U; result == ESP_OK &&
+         index < sizeof(intervals) / sizeof(intervals[0]); ++index) {
+        const bool selected = settings->poll_interval_s == intervals[index].seconds;
+        matched = matched || selected;
+        result = send_option(request, intervals[index].value,
+                             intervals[index].label, selected);
+    }
+    if (result == ESP_OK && !matched) {
+        char value[8];
+        char label[24];
+        (void)snprintf(value, sizeof(value), "%u", (unsigned)settings->poll_interval_s);
+        (void)snprintf(label, sizeof(label), "%u seconds", (unsigned)settings->poll_interval_s);
+        result = send_option(request, value, label, true);
+    }
+    if (result == ESP_OK) {
+        const bool logging = settings->logging_mode != AIRTRACK_LOGGING_OFF;
+        length = snprintf(
+            text, sizeof(text),
+            "</select><p class=hint>How often adsb.fi is polled. Their public "
+            "limit is one request per second.</p></section>"
+            "<section class=card id=storage><div class=row><div><h2>SD sighting log</h2>"
+            "<p class=sub id=sdsub>%s</p></div><label class=switch>"
+            "<input type=checkbox name=logging value=1%s><i></i></label></div>"
+            "<p class=hint>Appends NDJSON records of target changes to "
+            "/airtrack/logs on a FAT32 card. Nothing is written when logging is off.</p>"
+            "</section>"
+            "<div class=\"card actions\"><span id=toast class=toast></span>"
+            "<button type=submit>" ICON_SAVE "Save changes</button></div>"
+            "</div></div></form>",
+            !snapshot->sd_mounted ? "No SD card detected"
+            : logging ? "Enabled" : "Disabled &middot; card ready",
+            logging ? " checked" : "");
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    return result;
+}
+
+static esp_err_t send_system_card(httpd_req_t *request,
+                                  const status_web_snapshot_storage_t *snapshot)
+{
+    char version[STATUS_WEB_VERSION_MAX_BYTES + 1U];
+    copy_firmware_version(version);
+    char text[768];
+    char signal[24];
+    if (snapshot->rssi_available) {
+        (void)snprintf(signal, sizeof(signal), "%d dBm", (int)snapshot->rssi_dbm);
+    } else {
+        memcpy(signal, "unavailable", sizeof("unavailable"));
+    }
+    char sd[48];
+    if (!snapshot->sd_mounted) {
+        memcpy(sd, "No card", sizeof("No card"));
+    } else if (snapshot->sd_logging_enabled) {
+        (void)snprintf(sd, sizeof(sd), "Logging &middot; %lu records",
+                       (unsigned long)snapshot->sd_records_written);
+    } else {
+        memcpy(sd, "Card mounted &middot; logging off",
+               sizeof("Card mounted &middot; logging off"));
+    }
+    esp_err_t result = send_html_chunk(request,
+        "<section class=card id=system><div class=sys><div><h2>System</h2>"
+        "<div class=kv><span>Firmware</span><b>");
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, version);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</b><span>Address</span><b>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, snapshot->ip_address);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, " &middot; http://");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, snapshot->settings.hostname);
+    }
+    if (result == ESP_OK) {
+        const int length = snprintf(
+            text, sizeof(text),
+            ".local</b><span>Wi-Fi signal</span><b id=rssi>%s</b>"
+            "<span>Uptime</span><b id=uptime>%luh %02lum</b>"
+            "<span>Time</span><b id=time>%s</b>"
+            "<span>Feed polls</span><b id=polls>%lu ok &middot; %lu failed &middot; %lu TLS sessions</b>"
+            "<span>Heap</span><b id=heap>%lu KiB free &middot; min %lu KiB</b>"
+            "<span>SD card</span><b id=sd>%s</b>"
+            "<span>Flash</span><b>%lu MiB</b></div></div>"
+            "<form id=rb method=post action=/api/v1/reboot>"
+            "<input type=hidden name=csrf_token value=\"",
+            signal,
+            (unsigned long)(snapshot->uptime_s / 3600U),
+            (unsigned long)((snapshot->uptime_s % 3600U) / 60U),
+            snapshot->time_synchronized ? "synchronized" : "not yet synchronized",
+            (unsigned long)snapshot->polls_ok, (unsigned long)snapshot->polls_failed,
+            (unsigned long)snapshot->tls_connections,
+            (unsigned long)(snapshot->free_heap_bytes / 1024U),
+            (unsigned long)(snapshot->minimum_free_heap_bytes / 1024U),
+            sd, (unsigned long)(snapshot->flash_bytes / (1024U * 1024U)));
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, s_csrf_token);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "\"><button class=ghost type=submit>Restart device</button></form>"
+            "</div><p class=hint>Wi-Fi credentials are changed only from the "
+            "isolated setup hotspot: hold BOOT for five seconds.</p></section>");
     }
     return result;
 }
@@ -902,73 +1093,12 @@ static esp_err_t status_page_handler(httpd_req_t *request)
     if (!request_has_canonical_host(request, &snapshot)) {
         return send_canonical_redirect(request, &snapshot, "/");
     }
-
-    char version[STATUS_WEB_VERSION_MAX_BYTES + 1U];
-    copy_firmware_version(version);
-
-    char signal[24];
-    if (snapshot.rssi_available) {
-        const int length = snprintf(signal, sizeof(signal), "%d dBm",
-                                    (int)snapshot.rssi_dbm);
-        if (length < 0 || (size_t)length >= sizeof(signal)) {
-            return ESP_ERR_INVALID_SIZE;
-        }
-    } else {
-        memcpy(signal, "Unavailable", sizeof("Unavailable"));
-    }
-
-    char flash[48];
-    const uint32_t mib = snapshot.flash_bytes / (1024U * 1024U);
-    int flash_length;
-    if (snapshot.flash_bytes > 0U &&
-        snapshot.flash_bytes % (1024U * 1024U) == 0U) {
-        flash_length = snprintf(flash, sizeof(flash), "%lu MiB (%lu bytes)",
-                                (unsigned long)mib,
-                                (unsigned long)snapshot.flash_bytes);
-    } else {
-        flash_length = snprintf(flash, sizeof(flash), "%lu bytes",
-                                (unsigned long)snapshot.flash_bytes);
-    }
-    if (flash_length < 0 || (size_t)flash_length >= sizeof(flash)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    char uptime[32];
-    (void)snprintf(uptime, sizeof(uptime), "%luh %02lum",
-                   (unsigned long)(snapshot.uptime_s / 3600U),
-                   (unsigned long)((snapshot.uptime_s % 3600U) / 60U));
-    char polls[64];
-    (void)snprintf(polls, sizeof(polls), "%lu ok · %lu failed · %lu TLS",
-                   (unsigned long)snapshot.polls_ok,
-                   (unsigned long)snapshot.polls_failed,
-                   (unsigned long)snapshot.tls_connections);
-    char heap[64];
-    (void)snprintf(heap, sizeof(heap), "%lu KiB free · min %lu KiB",
-                   (unsigned long)(snapshot.free_heap_bytes / 1024U),
-                   (unsigned long)(snapshot.minimum_free_heap_bytes / 1024U));
-    char sd[48];
-    if (!snapshot.sd_mounted) {
-        memcpy(sd, "Unavailable", sizeof("Unavailable"));
-    } else if (snapshot.sd_logging_enabled) {
-        (void)snprintf(sd, sizeof(sd), "Logging (%lu records)",
-                       (unsigned long)snapshot.sd_records_written);
-    } else {
-        memcpy(sd, "Mounted, logging off", sizeof("Mounted, logging off"));
-    }
-
-    esp_err_t result =
-        httpd_resp_set_type(request, "text/html; charset=utf-8");
+    esp_err_t result = httpd_resp_set_type(request, "text/html; charset=utf-8");
     if (result == ESP_OK) {
         result = set_security_headers(request);
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_HEAD);
-    }
-    if (result == ESP_OK) {
-        result = send_tracking_cards(request, &snapshot);
-    }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_NETWORK);
     }
     if (result == ESP_OK) {
         result = send_html_escaped(request, snapshot.ssid);
@@ -977,52 +1107,47 @@ static esp_err_t status_page_handler(httpd_req_t *request)
         result = send_html_chunk(request, PAGE_AFTER_SSID);
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, snapshot.ip_address);
+        result = send_html_chunk(request, api_class(snapshot.aircraft.state));
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_IP);
+        result = send_html_chunk(request, "\">");
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, signal);
+        result = send_html_chunk(request, api_text(snapshot.aircraft.state));
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_SIGNAL);
+        result = send_html_chunk(request, PAGE_AFTER_API);
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, uptime);
+        char age[24];
+        if (snapshot.aircraft.last_success_monotonic_ms > 0) {
+            (void)snprintf(age, sizeof(age), "%.0fs ago",
+                           seconds_since_success(&snapshot));
+        } else {
+            memcpy(age, "never", sizeof("never"));
+        }
+        result = send_html_chunk(request, age);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_UPTIME);
+        result = send_html_chunk(request, PAGE_MAIN_START);
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, polls);
+        result = send_html_chunk(request, PAGE_FORM_START);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_POLLS);
+        result = send_html_escaped(request, s_csrf_token);
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, heap);
+        result = send_html_chunk(request, PAGE_GRID_START);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_HEAP);
+        result = send_nearest_card(request, &snapshot);
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, version);
+        result = send_settings_cards(request, &snapshot);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_VERSION);
-    }
-    if (result == ESP_OK) {
-        result = send_html_escaped(request, sd);
-    }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_AFTER_SD);
-    }
-    if (result == ESP_OK) {
-        result = send_html_escaped(request, flash);
-    }
-    if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_TAIL);
+        result = send_system_card(request, &snapshot);
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_FOOTER);
@@ -1033,21 +1158,36 @@ static esp_err_t status_page_handler(httpd_req_t *request)
     return result;
 }
 
-static esp_err_t app_js_handler(httpd_req_t *request)
+static esp_err_t send_embedded_asset(httpd_req_t *request, const char *path,
+                                     const char *content_type,
+                                     const char *start, const char *end)
 {
     const status_web_snapshot_storage_t snapshot = copy_snapshot();
     if (!request_has_canonical_host(request, &snapshot)) {
-        return send_canonical_redirect(request, &snapshot, "/app.js");
+        return send_canonical_redirect(request, &snapshot, path);
     }
-    esp_err_t result = httpd_resp_set_type(
-        request, "application/javascript; charset=utf-8");
+    esp_err_t result = httpd_resp_set_type(request, content_type);
     if (result == ESP_OK) {
         result = set_security_headers(request);
     }
     if (result == ESP_OK) {
-        result = httpd_resp_send(request, APP_JS, sizeof(APP_JS) - 1U);
+        /* EMBED_TXTFILES appends a terminating NUL that must not be sent. */
+        result = httpd_resp_send(request, start, (size_t)(end - start) - 1U);
     }
     return result;
+}
+
+static esp_err_t app_js_handler(httpd_req_t *request)
+{
+    return send_embedded_asset(request, "/app.js",
+                               "application/javascript; charset=utf-8",
+                               app_js_start, app_js_end);
+}
+
+static esp_err_t app_css_handler(httpd_req_t *request)
+{
+    return send_embedded_asset(request, "/app.css", "text/css; charset=utf-8",
+                               app_css_start, app_css_end);
 }
 
 static esp_err_t status_api_handler(httpd_req_t *request)
@@ -1244,19 +1384,49 @@ static bool form_content_type(httpd_req_t *request)
     return strcasecmp(start, "application/x-www-form-urlencoded") == 0;
 }
 
-static esp_err_t parse_location_form(const char *body, size_t length,
-                                     int32_t *latitude_e7,
-                                     int32_t *longitude_e7,
-                                     uint16_t *radius_nm)
+static bool parse_bounded_ulong(const char *text, unsigned long minimum,
+                                unsigned long maximum, unsigned long *out)
 {
-    char latitude[24] = {0};
-    char longitude[24] = {0};
-    char radius[8] = {0};
+    errno = 0;
+    char *end = NULL;
+    const unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value < minimum ||
+        value > maximum) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+typedef struct {
+    bool have_csrf;
+    bool csrf_ok;
+    bool have_latitude;
+    bool have_longitude;
+    bool have_radius;
+    bool have_poll;
+    bool have_brightness;
+    bool have_units;
+    bool airborne;
+    bool logging;
+    char latitude[24];
+    char longitude[24];
+    char radius[8];
+    char poll[8];
+    char brightness[8];
+    char units[4];
+} settings_form_t;
+
+/*
+ * Decode a form body into fixed fields.  Unknown keys and duplicates are
+ * rejected outright; the caller decides which keys are required.
+ */
+static esp_err_t decode_settings_form(const char *body, size_t length,
+                                      settings_form_t *form)
+{
+    memset(form, 0, sizeof(*form));
     char csrf[STATUS_WEB_CSRF_BYTES + 1U] = {0};
-    bool have_latitude = false;
-    bool have_longitude = false;
-    bool have_radius = false;
-    bool have_csrf = false;
+    char flag[4];
     size_t offset = 0U;
     while (offset < length) {
         const char *pair = body + offset;
@@ -1271,26 +1441,33 @@ static esp_err_t parse_location_form(const char *body, size_t length,
         char key[20];
         esp_err_t result = decode_form(pair, (size_t)(equals - pair), key,
                                        sizeof(key));
+        if (result != ESP_OK) {
+            return result;
+        }
         const char *encoded = equals + 1;
         const size_t encoded_length = pair_length - (size_t)(encoded - pair);
-        if (result == ESP_OK && strcmp(key, "latitude") == 0 && !have_latitude) {
-            result = decode_form(encoded, encoded_length, latitude,
-                                 sizeof(latitude));
-            have_latitude = result == ESP_OK;
-        } else if (result == ESP_OK && strcmp(key, "longitude") == 0 &&
-                   !have_longitude) {
-            result = decode_form(encoded, encoded_length, longitude,
-                                 sizeof(longitude));
-            have_longitude = result == ESP_OK;
-        } else if (result == ESP_OK && strcmp(key, "radius") == 0 &&
-                   !have_radius) {
-            result = decode_form(encoded, encoded_length, radius,
-                                 sizeof(radius));
-            have_radius = result == ESP_OK;
-        } else if (result == ESP_OK && strcmp(key, "csrf_token") == 0 &&
-                   !have_csrf) {
-            result = decode_form(encoded, encoded_length, csrf, sizeof(csrf));
-            have_csrf = result == ESP_OK;
+#define FIELD(name, buffer, flagvar)                                          \
+        else if (strcmp(key, name) == 0 && !form->flagvar) {                  \
+            result = decode_form(encoded, encoded_length, buffer,             \
+                                 sizeof(buffer));                             \
+            form->flagvar = result == ESP_OK;                                 \
+        }
+        if (false) {
+        }
+        FIELD("csrf_token", csrf, have_csrf)
+        FIELD("latitude", form->latitude, have_latitude)
+        FIELD("longitude", form->longitude, have_longitude)
+        FIELD("radius", form->radius, have_radius)
+        FIELD("poll", form->poll, have_poll)
+        FIELD("brightness", form->brightness, have_brightness)
+        FIELD("units", form->units, have_units)
+#undef FIELD
+        else if (strcmp(key, "airborne") == 0 && !form->airborne) {
+            result = decode_form(encoded, encoded_length, flag, sizeof(flag));
+            form->airborne = result == ESP_OK && strcmp(flag, "1") == 0;
+        } else if (strcmp(key, "logging") == 0 && !form->logging) {
+            result = decode_form(encoded, encoded_length, flag, sizeof(flag));
+            form->logging = result == ESP_OK && strcmp(flag, "1") == 0;
         } else {
             return ESP_ERR_INVALID_ARG;
         }
@@ -1299,92 +1476,212 @@ static esp_err_t parse_location_form(const char *body, size_t length,
         }
         offset += pair_length + (separator != NULL ? 1U : 0U);
     }
-    uint8_t csrf_difference = 0U;
-    if (!have_latitude || !have_longitude || !have_radius || !have_csrf ||
-        strlen(csrf) != STATUS_WEB_CSRF_BYTES) {
+    if (form->have_csrf && strlen(csrf) == STATUS_WEB_CSRF_BYTES) {
+        uint8_t difference = 0U;
+        for (size_t index = 0U; index < STATUS_WEB_CSRF_BYTES; ++index) {
+            difference |= (uint8_t)csrf[index] ^ (uint8_t)s_csrf_token[index];
+        }
+        form->csrf_ok = difference == 0U;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t apply_settings_form(const settings_form_t *form,
+                                     airtrack_settings_t *settings)
+{
+    if (!form->have_latitude || !form->have_longitude || !form->have_radius) {
         return ESP_ERR_INVALID_ARG;
-    }
-    for (size_t index = 0U; index < STATUS_WEB_CSRF_BYTES; ++index) {
-        csrf_difference |= (uint8_t)csrf[index] ^ (uint8_t)s_csrf_token[index];
-    }
-    if (csrf_difference != 0U) {
-        return ESP_ERR_INVALID_STATE;
     }
     errno = 0;
     char *latitude_end = NULL;
     char *longitude_end = NULL;
-    char *radius_end = NULL;
-    const double latitude_value = strtod(latitude, &latitude_end);
-    const double longitude_value = strtod(longitude, &longitude_end);
-    const unsigned long radius_value = strtoul(radius, &radius_end, 10);
-    if (errno != 0 || latitude_end == latitude || *latitude_end != '\0' ||
-        longitude_end == longitude || *longitude_end != '\0' ||
-        radius_end == radius || *radius_end != '\0' ||
-        !isfinite(latitude_value) || !isfinite(longitude_value) ||
-        latitude_value < -90.0 || latitude_value > 90.0 ||
-        longitude_value < -180.0 || longitude_value > 180.0 ||
-        radius_value < 1UL || radius_value > 250UL) {
+    const double latitude = strtod(form->latitude, &latitude_end);
+    const double longitude = strtod(form->longitude, &longitude_end);
+    unsigned long numeric = 0UL;
+    if (errno != 0 || latitude_end == form->latitude || *latitude_end != '\0' ||
+        longitude_end == form->longitude || *longitude_end != '\0' ||
+        !isfinite(latitude) || !isfinite(longitude) ||
+        latitude < -90.0 || latitude > 90.0 ||
+        longitude < -180.0 || longitude > 180.0 ||
+        !parse_bounded_ulong(form->radius, 1UL, 250UL, &numeric)) {
         return ESP_ERR_INVALID_ARG;
     }
-    *latitude_e7 = (int32_t)llround(latitude_value * 10000000.0);
-    *longitude_e7 = (int32_t)llround(longitude_value * 10000000.0);
-    *radius_nm = (uint16_t)radius_value;
+    settings->location_configured = true;
+    settings->latitude_e7 = (int32_t)llround(latitude * 10000000.0);
+    settings->longitude_e7 = (int32_t)llround(longitude * 10000000.0);
+    settings->radius_nm = (uint16_t)numeric;
+    if (form->have_poll) {
+        if (!parse_bounded_ulong(form->poll, 2UL, 300UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->poll_interval_s = (uint16_t)numeric;
+    }
+    if (form->have_brightness) {
+        if (!parse_bounded_ulong(form->brightness, 0UL, 50UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->brightness_percent = (uint8_t)numeric;
+    }
+    if (form->have_units) {
+        if (strcmp(form->units, "nm") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_NM;
+        } else if (strcmp(form->units, "km") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_KM;
+        } else if (strcmp(form->units, "mi") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_MI;
+        } else {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+    /* Checkboxes are absent when unchecked; the dashboard always posts the
+     * complete form, so absence is an explicit "off". */
+    settings->include_ground = !form->airborne;
+    if (form->logging) {
+        if (settings->logging_mode == AIRTRACK_LOGGING_OFF) {
+            settings->logging_mode = AIRTRACK_LOGGING_TARGET_CHANGES;
+        }
+    } else {
+        settings->logging_mode = AIRTRACK_LOGGING_OFF;
+    }
+    return airtrack_settings_validate(settings);
+}
+
+static bool wants_json(httpd_req_t *request)
+{
+    char accept[96];
+    if (httpd_req_get_hdr_value_str(request, "Accept", accept,
+                                    sizeof(accept)) != ESP_OK) {
+        return false;
+    }
+    return strstr(accept, "application/json") != NULL;
+}
+
+static esp_err_t send_form_result(httpd_req_t *request, bool ok,
+                                  const char *status, const char *message)
+{
+    if (wants_json(request)) {
+        char body[160];
+        const int length = snprintf(body, sizeof(body),
+                                    "{\"ok\":%s,\"error\":\"%s\"}",
+                                    ok ? "true" : "false", ok ? "" : message);
+        esp_err_t result = httpd_resp_set_status(request, status);
+        if (result == ESP_OK) {
+            result = httpd_resp_set_type(request, "application/json; charset=utf-8");
+        }
+        if (result == ESP_OK) {
+            result = set_security_headers(request);
+        }
+        if (result == ESP_OK) {
+            result = send_chunk_or_size(request, body, length, sizeof(body));
+        }
+        if (result == ESP_OK) {
+            result = httpd_resp_send_chunk(request, NULL, 0U);
+        }
+        return result;
+    }
+    if (ok) {
+        const status_web_snapshot_storage_t snapshot = copy_snapshot();
+        return send_canonical_redirect(request, &snapshot, "/");
+    }
+    return send_plain_error(request, status, message);
+}
+
+static esp_err_t read_form_body(httpd_req_t *request, char *body,
+                                size_t capacity, size_t *received)
+{
+    *received = 0U;
+    if (!form_content_type(request) || request->content_len <= 0 ||
+        (size_t)request->content_len >= capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    while (*received < (size_t)request->content_len) {
+        const int count = httpd_req_recv(request, body + *received,
+            (size_t)request->content_len - *received);
+        if (count <= 0) {
+            memset(body, 0, capacity);
+            return ESP_ERR_TIMEOUT;
+        }
+        *received += (size_t)count;
+    }
+    body[*received] = '\0';
     return ESP_OK;
 }
 
-static esp_err_t location_form_handler(httpd_req_t *request)
+static esp_err_t settings_form_handler(httpd_req_t *request)
 {
     const status_web_snapshot_storage_t snapshot = copy_snapshot();
     if (!request_has_canonical_host(request, &snapshot)) {
-        return send_plain_error(
-            request, "403 Forbidden",
-            "Use the AirTrack address shown on the LCD.");
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
     }
-    if (snapshot.settings.location_configured || s_save_location == NULL) {
-        return send_plain_error(request, "409 Conflict",
-            "Location is already configured. Hold BOOT for five seconds to change it.");
-    }
-    if (!form_content_type(request) || request->content_len <= 0 ||
-        (size_t)request->content_len > STATUS_WEB_FORM_MAX_BYTES) {
-        return send_plain_error(request, "400 Bad Request",
-                                "Invalid location form.");
+    if (s_save_settings == NULL) {
+        return send_form_result(request, false, "503 Service Unavailable",
+                                "Settings cannot be changed right now.");
     }
     char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
     size_t received = 0U;
-    while (received < (size_t)request->content_len) {
-        const int count = httpd_req_recv(request, body + received,
-            (size_t)request->content_len - received);
-        if (count <= 0) {
-            memset(body, 0, sizeof(body));
-            return send_plain_error(request, "408 Request Timeout",
-                                    "Incomplete location form.");
-        }
-        received += (size_t)count;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Invalid or incomplete form.");
     }
-    body[received] = '\0';
-    int32_t latitude_e7;
-    int32_t longitude_e7;
-    uint16_t radius_nm;
-    const esp_err_t parsed = parse_location_form(
-        body, received, &latitude_e7, &longitude_e7, &radius_nm);
+    settings_form_t form;
+    result = decode_settings_form(body, received, &form);
     memset(body, 0, sizeof(body));
-    if (parsed != ESP_OK) {
-        return send_plain_error(request, "400 Bad Request",
-            "Check latitude, longitude, radius, and reload the form.");
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Unrecognised form fields.");
     }
-    const esp_err_t saved = s_save_location(
-        latitude_e7, longitude_e7, radius_nm, s_user_context);
-    if (saved != ESP_OK) {
-        return send_plain_error(request, "500 Internal Server Error",
+    if (!form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    airtrack_settings_t settings = snapshot.settings;
+    result = apply_settings_form(&form, &settings);
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Check latitude, longitude, radius, and options.");
+    }
+    result = s_save_settings(&settings, s_user_context);
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "500 Internal Server Error",
                                 "Settings were not saved.");
     }
-    (void)set_security_headers(request);
-    (void)httpd_resp_set_type(request, "text/html; charset=utf-8");
-    return httpd_resp_sendstr(request,
-        "<!doctype html><meta name=viewport content=\"width=device-width\">"
-        "<title>AirTrack configured</title><body style=\"font-family:system-ui;"
-        "background:#071017;color:#eef8fb;padding:2rem\"><h1>Location saved</h1>"
-        "<p>AirTrack is restarting and will begin tracking nearby aircraft.</p></body>");
+    taskENTER_CRITICAL(&s_snapshot_lock);
+    s_snapshot.settings = settings;
+    taskEXIT_CRITICAL(&s_snapshot_lock);
+    return send_form_result(request, true, "200 OK", "");
+}
+
+static esp_err_t reboot_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    if (s_reboot == NULL) {
+        return send_form_result(request, false, "503 Service Unavailable",
+                                "Restart is not available.");
+    }
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    settings_form_t form;
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, &form);
+    }
+    memset(body, 0, sizeof(body));
+    if (result != ESP_OK || !form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    result = s_reboot(s_user_context);
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "409 Conflict",
+                                "A restart is already scheduled.");
+    }
+    return send_form_result(request, true, "200 OK", "");
 }
 
 static esp_err_t aircraft_api_handler(httpd_req_t *request)
@@ -1549,10 +1846,16 @@ static const httpd_uri_t URI_AIRCRAFT = {
     .handler = aircraft_api_handler,
 };
 
-static const httpd_uri_t URI_LOCATION = {
-    .uri = "/api/v1/config/location",
+static const httpd_uri_t URI_SETTINGS = {
+    .uri = "/api/v1/config",
     .method = HTTP_POST,
-    .handler = location_form_handler,
+    .handler = settings_form_handler,
+};
+
+static const httpd_uri_t URI_REBOOT = {
+    .uri = "/api/v1/reboot",
+    .method = HTTP_POST,
+    .handler = reboot_handler,
 };
 
 static const httpd_uri_t URI_FAVICON = {
@@ -1567,13 +1870,20 @@ static const httpd_uri_t URI_APP_JS = {
     .handler = app_js_handler,
 };
 
+static const httpd_uri_t URI_APP_CSS = {
+    .uri = "/app.css",
+    .method = HTTP_GET,
+    .handler = app_css_handler,
+};
+
 esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
-                           status_web_save_location_cb_t save_location,
+                           status_web_save_settings_cb_t save_settings,
+                           status_web_reboot_cb_t reboot,
                            void *user_context)
 {
     status_web_snapshot_storage_t normalized;
     esp_err_t result = normalize_snapshot(snapshot, &normalized);
-    if (result != ESP_OK || save_location == NULL) {
+    if (result != ESP_OK || save_settings == NULL) {
         if (result == ESP_OK) {
             result = ESP_ERR_INVALID_ARG;
         }
@@ -1590,14 +1900,15 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         return ESP_ERR_INVALID_STATE;
     }
     replace_snapshot(&normalized);
-    s_save_location = save_location;
+    s_save_settings = save_settings;
+    s_reboot = reboot;
     s_user_context = user_context;
     make_csrf_token();
 
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
-    server_config.stack_size = 6144U;
+    server_config.stack_size = 8192U;
     server_config.max_open_sockets = 3U;
-    server_config.max_uri_handlers = 8U;
+    server_config.max_uri_handlers = 10U;
     server_config.lru_purge_enable = true;
     server_config.recv_wait_timeout = 5U;
     server_config.send_wait_timeout = 5U;
@@ -1606,7 +1917,8 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
     result = httpd_start(&server, &server_config);
     if (result != ESP_OK) {
         clear_snapshot();
-        s_save_location = NULL;
+        s_save_settings = NULL;
+        s_reboot = NULL;
         s_user_context = NULL;
         memset(s_csrf_token, 0, sizeof(s_csrf_token));
         xSemaphoreGive(lock);
@@ -1618,9 +1930,11 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_STATUS,
         &URI_CONFIG,
         &URI_AIRCRAFT,
-        &URI_LOCATION,
+        &URI_SETTINGS,
+        &URI_REBOOT,
         &URI_FAVICON,
         &URI_APP_JS,
+        &URI_APP_CSS,
     };
     for (size_t index = 0U; index < sizeof(handlers) / sizeof(handlers[0]);
          ++index) {
@@ -1629,7 +1943,8 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
             const esp_err_t stop_result = httpd_stop(server);
             if (stop_result == ESP_OK) {
                 clear_snapshot();
-                s_save_location = NULL;
+                s_save_settings = NULL;
+        s_reboot = NULL;
                 s_user_context = NULL;
                 memset(s_csrf_token, 0, sizeof(s_csrf_token));
             } else {
@@ -1686,7 +2001,8 @@ esp_err_t status_web_stop(void)
     if (result == ESP_OK) {
         s_server = NULL;
         clear_snapshot();
-        s_save_location = NULL;
+        s_save_settings = NULL;
+        s_reboot = NULL;
         s_user_context = NULL;
         memset(s_csrf_token, 0, sizeof(s_csrf_token));
         ESP_LOGI(TAG, "LAN status server stopped");
