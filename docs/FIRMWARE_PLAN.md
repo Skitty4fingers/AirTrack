@@ -368,7 +368,7 @@ Backlight behavior:
 - Keep it off until the first valid frame has been transferred.
 - Use LEDC PWM on GPIO22 at approximately 5 kHz.
 - Clamp all paths, including defaults and API input, to 50%.
-- Optionally blank after a configured idle schedule, but do not use light sleep in the MVP.
+- Night schedule: between `night_start_min` and `night_end_min` (local time from the stored POSIX TZ rule) the panel uses `night_brightness_percent` and the status LED may be switched off; evaluated every supervisor cycle. No light sleep.
 
 ## 12. SD logging
 

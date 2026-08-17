@@ -59,6 +59,7 @@
     t('sd', j.sd_mounted ? (j.sd_logging ? 'Logging · ' + j.sd_records + ' records' : 'Card mounted · logging off') : 'No card');
     t('sdsub', j.sd_mounted ? (j.sd_logging ? 'Enabled · ' + j.sd_records + ' records written' : 'Disabled · card ready') : 'No SD card detected');
     t('time', j.time_synchronized ? 'synchronized' : 'not yet synchronized');
+    if (j.local_minutes !== undefined) { t('ltime', j.local_minutes < 0 ? '--:--' : ('0' + Math.floor(j.local_minutes / 60)).slice(-2) + ':' + ('0' + j.local_minutes % 60).slice(-2) + (j.night ? ' · night mode' : '')); t('nightsub', j.night ? 'Active now · panel dimmed' : 'Inactive'); }
     if (j.sd_log_bytes !== undefined) t('logusage', 'Using ' + (j.sd_log_bytes / 1048576).toFixed(1) + ' MiB in ' + j.sd_log_files + ' file' + (j.sd_log_files === 1 ? '' : 's') + ' of the cap · ' + j.sd_files_pruned + ' pruned');
   }
 
@@ -130,6 +131,33 @@
 
   /* Form helpers: sliders <-> labels, fetch-based save with a toast. */
   var br = $('br'), brv = $('brv'); if (br && brv) br.oninput = function () { brv.textContent = br.value + '%'; };
+  var nbr = $('nbr'), nbrv = $('nbrv'); if (nbr && nbrv) nbr.oninput = function () { nbrv.textContent = nbr.value + '%'; };
+
+  /* Timezone presets: IANA name -> POSIX rule the device understands. The
+     browser's zone is pre-selected when the device has none yet. */
+  var TZ = [
+    ['UTC', 'UTC0'], ['America/Anchorage', 'AKST9AKDT,M3.2.0,M11.1.0'], ['America/Los_Angeles', 'PST8PDT,M3.2.0,M11.1.0'],
+    ['America/Vancouver', 'PST8PDT,M3.2.0,M11.1.0'], ['America/Denver', 'MST7MDT,M3.2.0,M11.1.0'], ['America/Phoenix', 'MST7'],
+    ['America/Chicago', 'CST6CDT,M3.2.0,M11.1.0'], ['America/New_York', 'EST5EDT,M3.2.0,M11.1.0'], ['America/Toronto', 'EST5EDT,M3.2.0,M11.1.0'],
+    ['America/Halifax', 'AST4ADT,M3.2.0,M11.1.0'], ['America/Sao_Paulo', '<-03>3'], ['Pacific/Honolulu', 'HST10'],
+    ['Europe/London', 'GMT0BST,M3.5.0/1,M10.5.0'], ['Europe/Dublin', 'IST-1GMT0,M10.5.0,M3.5.0/1'], ['Europe/Lisbon', 'WET0WEST,M3.5.0/1,M10.5.0'],
+    ['Europe/Paris', 'CET-1CEST,M3.5.0,M10.5.0/3'], ['Europe/Berlin', 'CET-1CEST,M3.5.0,M10.5.0/3'], ['Europe/Madrid', 'CET-1CEST,M3.5.0,M10.5.0/3'],
+    ['Europe/Rome', 'CET-1CEST,M3.5.0,M10.5.0/3'], ['Europe/Amsterdam', 'CET-1CEST,M3.5.0,M10.5.0/3'], ['Europe/Stockholm', 'CET-1CEST,M3.5.0,M10.5.0/3'],
+    ['Europe/Helsinki', 'EET-2EEST,M3.5.0/3,M10.5.0/4'], ['Europe/Athens', 'EET-2EEST,M3.5.0/3,M10.5.0/4'], ['Europe/Moscow', 'MSK-3'],
+    ['Asia/Dubai', '<+04>-4'], ['Asia/Kolkata', 'IST-5:30'], ['Asia/Singapore', '<+08>-8'], ['Asia/Hong_Kong', 'HKT-8'],
+    ['Asia/Shanghai', 'CST-8'], ['Asia/Tokyo', 'JST-9'], ['Asia/Seoul', 'KST-9'], ['Australia/Perth', 'AWST-8'],
+    ['Australia/Brisbane', 'AEST-10'], ['Australia/Sydney', 'AEST-10AEDT,M10.1.0,M4.1.0/3'], ['Australia/Melbourne', 'AEST-10AEDT,M10.1.0,M4.1.0/3'],
+    ['Australia/Adelaide', 'ACST-9:30ACDT,M10.1.0,M4.1.0/3'], ['Pacific/Auckland', 'NZST-12NZDT,M9.5.0,M4.1.0/3']];
+  var tzsel = $('tzsel'), tz = $('tz');
+  if (tzsel && tz) {
+    TZ.forEach(function (z) { var o = document.createElement('option'); o.value = z[1]; o.textContent = z[0]; tzsel.appendChild(o); });
+    var mine = ''; try { mine = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+    var match = TZ.filter(function (z) { return z[1] === tz.value; })[0];
+    if (match) tzsel.value = match[1];
+    else if (!tz.value && mine) { var m2 = TZ.filter(function (z) { return z[0] === mine; })[0]; if (m2) { tzsel.value = m2[1]; tz.value = m2[1]; var h = $('tzhint'); if (h) h.textContent = 'Detected ' + mine + ' from this browser — press Save changes to keep it.'; } }
+    tzsel.onchange = function () { if (tzsel.value) tz.value = tzsel.value; };
+    tz.oninput = function () { var m3 = TZ.filter(function (z) { return z[1] === tz.value; })[0]; tzsel.value = m3 ? m3[1] : ''; };
+  }
   var rad = $('rad'), radn = $('radn');
   if (rad && radn) { rad.oninput = function () { radn.value = rad.value; }; radn.oninput = function () { var v = Math.min(250, Math.max(1, +radn.value || 1)); rad.value = v; }; }
   function toast(msg, cls) { var e = $('toast'); if (!e) return; e.textContent = msg; e.className = 'toast ' + (cls || ''); if (cls === 'ok') setTimeout(function () { if (e.textContent === msg) e.textContent = ''; }, 5000); }

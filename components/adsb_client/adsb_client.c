@@ -271,7 +271,7 @@ static esp_err_t ensure_http_client(const char *url, bool *fresh)
         .timeout_ms = HTTP_TIMEOUT_MS,
         .buffer_size = 2048,
         .buffer_size_tx = 512,
-        .user_agent = "AirTrack/1.3 (ESP32-C6; personal non-commercial)",
+        .user_agent = "AirTrack/1.4 (ESP32-C6; personal non-commercial)",
         .keep_alive_enable = true,
         /* The production endpoint is canonical. Refuse redirects rather than
          * allowing an untrusted Location header to select another host. */
@@ -443,7 +443,7 @@ static void route_lookup(route_entry_t *entry)
         .timeout_ms = ROUTE_HTTP_TIMEOUT_MS,
         .buffer_size = 1024,
         .buffer_size_tx = 512,
-        .user_agent = "AirTrack/1.3 (ESP32-C6; personal non-commercial)",
+        .user_agent = "AirTrack/1.4 (ESP32-C6; personal non-commercial)",
         .disable_auto_redirect = true,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);

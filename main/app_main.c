@@ -8,6 +8,7 @@
 #include "storage_logger.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -126,6 +127,10 @@ static void settings_publish(const airtrack_settings_t *updated)
     taskEXIT_CRITICAL(&s_settings_lock);
 }
 
+static void apply_timezone(const airtrack_settings_t *settings);
+static int local_minutes_of_day(void);
+static bool night_now(const airtrack_settings_t *settings);
+
 static esp_err_t save_device_settings(const setup_web_submission_t *submission,
                                       void *user_context)
 {
@@ -189,6 +194,12 @@ static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
     updated.retention_mib = requested->retention_mib;
     memcpy(updated.focus_flight, requested->focus_flight,
            sizeof(updated.focus_flight));
+    updated.night_enabled = requested->night_enabled;
+    updated.night_start_min = requested->night_start_min;
+    updated.night_end_min = requested->night_end_min;
+    updated.night_brightness_percent = requested->night_brightness_percent;
+    updated.night_led_off = requested->night_led_off;
+    memcpy(updated.timezone, requested->timezone, sizeof(updated.timezone));
     esp_err_t err = airtrack_settings_validate(&updated);
     if (err == ESP_OK) {
         err = airtrack_config_save_settings(&updated);
@@ -202,7 +213,8 @@ static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
     }
     settings_publish(&updated);
     *requested = updated;
-    (void)board_backlight_set(updated.brightness_percent);
+    apply_timezone(&updated);
+    /* Brightness is applied by the supervisor cycle (day/night aware). */
     (void)adsb_client_update_settings(&updated);
     (void)storage_logger_update_settings(&updated);
     ESP_LOGI(TAG, "Dashboard settings applied (generation %llu)",
@@ -291,6 +303,8 @@ static status_web_snapshot_t make_status_web_snapshot(
         .free_heap_bytes = heap_caps_get_free_size(MALLOC_CAP_8BIT),
         .minimum_free_heap_bytes = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
         .time_synchronized = time(NULL) >= VALID_TIME_EPOCH,
+        .night = night_now(settings),
+        .local_minutes = local_minutes_of_day(),
         .polls_ok = stats.polls_ok,
         .polls_failed = stats.polls_failed,
         .tls_connections = stats.connections,
@@ -343,7 +357,7 @@ static void set_rgb(uint8_t red, uint8_t green, uint8_t blue)
  * attention (connecting, stale, offline, setup).  Kept dim; it is a status
  * light, not a lamp.
  */
-typedef enum { LED_UNSET = 0, LED_BLUE, LED_ORANGE } led_state_t;
+typedef enum { LED_UNSET = 0, LED_BLUE, LED_ORANGE, LED_OFF } led_state_t;
 
 static void set_status_led(led_state_t *current, led_state_t wanted)
 {
@@ -353,8 +367,55 @@ static void set_status_led(led_state_t *current, led_state_t wanted)
     *current = wanted;
     if (wanted == LED_BLUE) {
         set_rgb(0, 4, 12);
-    } else {
+    } else if (wanted == LED_ORANGE) {
         set_rgb(12, 4, 0);
+    } else if (s_board_status.rgb_ready) {
+        (void)board_rgb_clear();
+    }
+}
+
+static void apply_timezone(const airtrack_settings_t *settings)
+{
+    if (settings->timezone[0] != '\0') {
+        setenv("TZ", settings->timezone, 1);
+    } else {
+        setenv("TZ", "UTC0", 1);
+    }
+    tzset();
+}
+
+/* Local minutes-of-day, or -1 until the clock is valid. */
+static int local_minutes_of_day(void)
+{
+    const time_t now = time(NULL);
+    if (now < VALID_TIME_EPOCH) {
+        return -1;
+    }
+    struct tm local;
+    if (localtime_r(&now, &local) == NULL) {
+        return -1;
+    }
+    return local.tm_hour * 60 + local.tm_min;
+}
+
+/*
+ * Night mode: dim the panel to the night brightness and, if configured, blank
+ * the accessory LED.  Re-evaluated every supervisor cycle; the backlight is
+ * only touched when the effective level changes.
+ */
+static bool night_now(const airtrack_settings_t *settings)
+{
+    return airtrack_settings_is_night(settings, local_minutes_of_day());
+}
+
+static void apply_brightness(const airtrack_settings_t *settings, bool night,
+                             int *applied_percent)
+{
+    const int wanted = night ? settings->night_brightness_percent
+                             : settings->brightness_percent;
+    if (wanted != *applied_percent) {
+        *applied_percent = wanted;
+        (void)board_backlight_set((uint8_t)wanted);
     }
 }
 
@@ -576,11 +637,20 @@ static setup_reason_t run_tracking_mode(void)
     TickType_t last_web_update = 0U;
     boot_hold_t boot_hold = {0};
     led_state_t led = LED_UNSET;
+    int applied_brightness = -1;
+    bool last_night = false;
 
     for (;;) {
         connectivity_status_t status;
         ESP_ERROR_CHECK(connectivity_get_status(&status));
         const airtrack_settings_t settings = settings_snapshot();
+        const bool night = night_now(&settings);
+        if (night != last_night) {
+            last_night = night;
+            ESP_LOGI(TAG, "%s mode (local %02d:%02d)", night ? "Night" : "Day",
+                     local_minutes_of_day() / 60, local_minutes_of_day() % 60);
+        }
+        apply_brightness(&settings, night, &applied_brightness);
 
         const bool status_changed = !have_last ||
                                     status.connected != last_connected ||
@@ -617,7 +687,8 @@ static setup_reason_t run_tracking_mode(void)
         airtrack_snapshot_t aircraft;
         ESP_ERROR_CHECK(adsb_client_get_snapshot(&aircraft));
         const bool snapshot_changed = aircraft.sequence != last_snapshot_sequence;
-        set_status_led(&led, status.connected &&
+        set_status_led(&led, night && settings.night_led_off ? LED_OFF
+                             : status.connected &&
                                      (aircraft.state == AIRTRACK_FEED_LIVE ||
                                       aircraft.state == AIRTRACK_FEED_EMPTY)
                                  ? LED_BLUE : LED_ORANGE);
@@ -719,6 +790,7 @@ void app_main(void)
     ESP_ERROR_CHECK(airtrack_config_init());
     ESP_ERROR_CHECK(airtrack_config_load(&s_config));
     ESP_ERROR_CHECK(airtrack_config_load_settings(&s_settings));
+    apply_timezone(&s_settings);
 
     board_config_t board_config = BOARD_CONFIG_DEFAULT();
     board_config.startup_brightness_percent = 0;

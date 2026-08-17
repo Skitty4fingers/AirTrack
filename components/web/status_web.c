@@ -45,6 +45,8 @@ typedef struct {
     uint32_t free_heap_bytes;
     uint32_t minimum_free_heap_bytes;
     bool time_synchronized;
+    bool night;
+    int local_minutes;
     uint32_t polls_ok;
     uint32_t polls_failed;
     uint32_t tls_connections;
@@ -324,6 +326,8 @@ static esp_err_t normalize_snapshot(
     destination->free_heap_bytes = source->free_heap_bytes;
     destination->minimum_free_heap_bytes = source->minimum_free_heap_bytes;
     destination->time_synchronized = source->time_synchronized;
+    destination->night = source->night;
+    destination->local_minutes = source->local_minutes;
     destination->polls_ok = source->polls_ok;
     destination->polls_failed = source->polls_failed;
     destination->tls_connections = source->tls_connections;
@@ -988,7 +992,36 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
                              settings->distance_unit == AIRTRACK_DISTANCE_MI);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, "</select></section></div><div class=col>");
+        char from[8];
+        char to[8];
+        (void)snprintf(from, sizeof(from), "%02u:%02u",
+                       (unsigned)settings->night_start_min / 60U,
+                       (unsigned)settings->night_start_min % 60U);
+        (void)snprintf(to, sizeof(to), "%02u:%02u",
+                       (unsigned)settings->night_end_min / 60U,
+                       (unsigned)settings->night_end_min % 60U);
+        length = snprintf(
+            text, sizeof(text),
+            "</select><div class=row style=\"margin-top:18px\"><div><h3 style=\"margin:0\">Night schedule</h3>"
+            "<p class=sub id=nightsub>%s</p></div><label class=switch>"
+            "<input type=checkbox name=night value=1%s><i></i></label></div>"
+            "<div class=two><label class=field>From<input name=night_from type=time value=\"%s\" required></label>"
+            "<label class=field>To<input name=night_to type=time value=\"%s\" required></label></div>"
+            "<h3>Night brightness <span class=val id=nbrv>%u%%</span></h3>"
+            "<input type=range id=nbr name=night_brightness min=0 max=50 value=%u>"
+            "<label class=check style=\"margin-top:10px\"><input type=checkbox name=night_led value=1%s> "
+            "Status LED off at night</label>"
+            "<h3>Timezone</h3><select id=tzsel><option value=\"\">Custom / UTC</option></select>"
+            "<input name=tz id=tz type=text maxlength=47 placeholder=\"POSIX rule, e.g. PST8PDT,M3.2.0,M11.1.0 (blank = UTC)\" value=\"%s\">"
+            "<p class=hint id=tzhint>Used only for the night schedule and the local time shown here.</p>"
+            "</section></div><div class=col>",
+            snapshot->night ? "Active now &middot; panel dimmed" : "Inactive",
+            settings->night_enabled ? " checked" : "", from, to,
+            (unsigned)settings->night_brightness_percent,
+            (unsigned)settings->night_brightness_percent,
+            settings->night_led_off ? " checked" : "",
+            settings->timezone);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
     }
 
     /* Right column: location, radius, filter, interval, storage, save. */
@@ -1125,6 +1158,15 @@ static esp_err_t send_system_card(httpd_req_t *request,
     } else {
         memcpy(signal, "unavailable", sizeof("unavailable"));
     }
+    char local_time[48];
+    if (snapshot->local_minutes >= 0) {
+        (void)snprintf(local_time, sizeof(local_time), "%02d:%02d %s%s",
+                       snapshot->local_minutes / 60, snapshot->local_minutes % 60,
+                       snapshot->settings.timezone[0] != '\0' ? "" : "UTC",
+                       snapshot->night ? " &middot; night mode" : "");
+    } else {
+        memcpy(local_time, "--:--", sizeof("--:--"));
+    }
     char sd[48];
     if (!snapshot->sd_mounted) {
         memcpy(sd, "No card", sizeof("No card"));
@@ -1159,6 +1201,7 @@ static esp_err_t send_system_card(httpd_req_t *request,
             ".local</b><span>Wi-Fi signal</span><b id=rssi>%s</b>"
             "<span>Uptime</span><b id=uptime>%luh %02lum</b>"
             "<span>Time</span><b id=time>%s</b>"
+            "<span>Local time</span><b id=ltime>%s</b>"
             "<span>Feed polls</span><b id=polls>%lu ok &middot; %lu failed &middot; %lu TLS sessions</b>"
             "<span>Heap</span><b id=heap>%lu KiB free &middot; min %lu KiB</b>"
             "<span>SD card</span><b id=sd>%s</b>"
@@ -1169,6 +1212,7 @@ static esp_err_t send_system_card(httpd_req_t *request,
             (unsigned long)(snapshot->uptime_s / 3600U),
             (unsigned long)((snapshot->uptime_s % 3600U) / 60U),
             snapshot->time_synchronized ? "synchronized" : "not yet synchronized",
+            local_time,
             (unsigned long)snapshot->polls_ok, (unsigned long)snapshot->polls_failed,
             (unsigned long)snapshot->tls_connections,
             (unsigned long)(snapshot->free_heap_bytes / 1024U),
@@ -1340,7 +1384,7 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             return ESP_ERR_INVALID_SIZE;
         }
 
-        char tail[560];
+        char tail[640];
         const int length = snprintf(
             tail, sizeof(tail),
             "\",\"rssi_dbm\":%s,\"sd_mounted\":%s,\"flash_bytes\":%lu,"
@@ -1350,7 +1394,8 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             "\"aircraft_count\":%u,\"http_status\":%d,"
             "\"polls_ok\":%lu,\"polls_failed\":%lu,\"tls_connections\":%lu,"
             "\"sd_logging\":%s,\"sd_records\":%lu,\"sd_log_bytes\":%llu,"
-            "\"sd_log_files\":%lu,\"sd_files_pruned\":%lu}",
+            "\"sd_log_files\":%lu,\"sd_files_pruned\":%lu,"
+            "\"night\":%s,\"local_minutes\":%d}",
             rssi,
             snapshot.sd_mounted ? "true" : "false",
             (unsigned long)snapshot.flash_bytes,
@@ -1369,7 +1414,8 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             (unsigned long)snapshot.sd_records_written,
             (unsigned long long)snapshot.sd_log_bytes,
             (unsigned long)snapshot.sd_log_files,
-            (unsigned long)snapshot.sd_files_pruned);
+            (unsigned long)snapshot.sd_files_pruned,
+            snapshot.night ? "true" : "false", snapshot.local_minutes);
         if (length < 0 || (size_t)length >= sizeof(tail)) {
             return ESP_ERR_INVALID_SIZE;
         }
@@ -1387,25 +1433,39 @@ static esp_err_t config_api_handler(httpd_req_t *request)
     if (!request_has_canonical_host(request, &snapshot)) {
         return send_canonical_redirect(request, &snapshot, "/api/v1/config");
     }
-    char body[512];
+    const airtrack_settings_t *settings = &snapshot.settings;
+    char body[768];
     const int length = snprintf(
         body, sizeof(body),
         "{\"generation\":%llu,\"location_configured\":%s,"
         "\"latitude\":%.7f,\"longitude\":%.7f,\"radius_nm\":%u,"
         "\"poll_interval_s\":%u,\"max_position_age_s\":%u,"
         "\"include_ground\":%s,\"distance_unit\":\"%s\","
-        "\"brightness_percent\":%u,\"logging_mode\":%u}",
-        (unsigned long long)snapshot.settings.generation,
-        snapshot.settings.location_configured ? "true" : "false",
-        (double)snapshot.settings.latitude_e7 / 10000000.0,
-        (double)snapshot.settings.longitude_e7 / 10000000.0,
-        (unsigned)snapshot.settings.radius_nm,
-        (unsigned)snapshot.settings.poll_interval_s,
-        (unsigned)snapshot.settings.max_position_age_s,
-        snapshot.settings.include_ground ? "true" : "false",
-        distance_suffix(snapshot.settings.distance_unit),
-        (unsigned)snapshot.settings.brightness_percent,
-        (unsigned)snapshot.settings.logging_mode);
+        "\"brightness_percent\":%u,\"logging_mode\":%u,\"retention_mib\":%u,"
+        "\"retention_days\":%u,\"focus\":\"%s\",\"night_enabled\":%s,"
+        "\"night_from\":\"%02u:%02u\",\"night_to\":\"%02u:%02u\","
+        "\"night_brightness_percent\":%u,\"night_led_off\":%s,"
+        "\"timezone\":\"%s\"}",
+        (unsigned long long)settings->generation,
+        settings->location_configured ? "true" : "false",
+        (double)settings->latitude_e7 / 10000000.0,
+        (double)settings->longitude_e7 / 10000000.0,
+        (unsigned)settings->radius_nm,
+        (unsigned)settings->poll_interval_s,
+        (unsigned)settings->max_position_age_s,
+        settings->include_ground ? "true" : "false",
+        distance_suffix(settings->distance_unit),
+        (unsigned)settings->brightness_percent,
+        (unsigned)settings->logging_mode,
+        (unsigned)settings->retention_mib,
+        (unsigned)settings->retention_days,
+        settings->focus_flight,
+        settings->night_enabled ? "true" : "false",
+        (unsigned)settings->night_start_min / 60U, (unsigned)settings->night_start_min % 60U,
+        (unsigned)settings->night_end_min / 60U, (unsigned)settings->night_end_min % 60U,
+        (unsigned)settings->night_brightness_percent,
+        settings->night_led_off ? "true" : "false",
+        settings->timezone);
     if (length < 0 || (size_t)length >= sizeof(body)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -1489,6 +1549,23 @@ static bool form_content_type(httpd_req_t *request)
     return strcasecmp(start, "application/x-www-form-urlencoded") == 0;
 }
 
+/* "HH:MM" -> minutes of day. */
+static bool parse_clock(const char *text, unsigned *minutes)
+{
+    if (text == NULL || strlen(text) != 5U || text[2] != ':' ||
+        !isdigit((unsigned char)text[0]) || !isdigit((unsigned char)text[1]) ||
+        !isdigit((unsigned char)text[3]) || !isdigit((unsigned char)text[4])) {
+        return false;
+    }
+    const unsigned hours = (unsigned)(text[0] - '0') * 10U + (unsigned)(text[1] - '0');
+    const unsigned mins = (unsigned)(text[3] - '0') * 10U + (unsigned)(text[4] - '0');
+    if (hours > 23U || mins > 59U) {
+        return false;
+    }
+    *minutes = hours * 60U + mins;
+    return true;
+}
+
 static bool parse_bounded_ulong(const char *text, unsigned long minimum,
                                 unsigned long maximum, unsigned long *out)
 {
@@ -1514,8 +1591,14 @@ typedef struct {
     bool have_units;
     bool have_focus;
     bool have_retention;
+    bool have_night_from;
+    bool have_night_to;
+    bool have_night_brightness;
+    bool have_tz;
     bool airborne;
     bool logging;
+    bool night;
+    bool night_led;
     char latitude[24];
     char longitude[24];
     char radius[8];
@@ -1524,6 +1607,10 @@ typedef struct {
     char units[4];
     char focus[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
     char retention[8];
+    char night_from[8];
+    char night_to[8];
+    char night_brightness[8];
+    char tz[AIRTRACK_TZ_MAX_LENGTH + 1U];
 } settings_form_t;
 
 /*
@@ -1572,6 +1659,10 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("units", form->units, have_units)
         FIELD("focus", form->focus, have_focus)
         FIELD("retention", form->retention, have_retention)
+        FIELD("night_from", form->night_from, have_night_from)
+        FIELD("night_to", form->night_to, have_night_to)
+        FIELD("night_brightness", form->night_brightness, have_night_brightness)
+        FIELD("tz", form->tz, have_tz)
 #undef FIELD
         else if (strcmp(key, "airborne") == 0 && !form->airborne) {
             result = decode_form(encoded, encoded_length, flag, sizeof(flag));
@@ -1579,6 +1670,12 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         } else if (strcmp(key, "logging") == 0 && !form->logging) {
             result = decode_form(encoded, encoded_length, flag, sizeof(flag));
             form->logging = result == ESP_OK && strcmp(flag, "1") == 0;
+        } else if (strcmp(key, "night") == 0 && !form->night) {
+            result = decode_form(encoded, encoded_length, flag, sizeof(flag));
+            form->night = result == ESP_OK && strcmp(flag, "1") == 0;
+        } else if (strcmp(key, "night_led") == 0 && !form->night_led) {
+            result = decode_form(encoded, encoded_length, flag, sizeof(flag));
+            form->night_led = result == ESP_OK && strcmp(flag, "1") == 0;
         } else {
             return ESP_ERR_INVALID_ARG;
         }
@@ -1664,6 +1761,23 @@ static esp_err_t apply_settings_form(const settings_form_t *form,
             return ESP_ERR_INVALID_ARG;
         }
         settings->retention_mib = (uint16_t)numeric;
+    }
+    if (form->have_night_from || form->have_night_to || form->have_night_brightness) {
+        /* The night section is posted as a whole; checkboxes absent = off. */
+        unsigned start = 0U;
+        unsigned end = 0U;
+        if (!parse_clock(form->night_from, &start) || !parse_clock(form->night_to, &end) ||
+            !parse_bounded_ulong(form->night_brightness, 0UL, 50UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->night_enabled = form->night;
+        settings->night_start_min = (uint16_t)start;
+        settings->night_end_min = (uint16_t)end;
+        settings->night_brightness_percent = (uint8_t)numeric;
+        settings->night_led_off = form->night_led;
+    }
+    if (form->have_tz) {
+        (void)snprintf(settings->timezone, sizeof(settings->timezone), "%s", form->tz);
     }
     /* Checkboxes are absent when unchecked; the dashboard always posts the
      * complete form, so absence is an explicit "off". */

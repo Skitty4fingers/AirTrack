@@ -13,6 +13,8 @@ extern "C" {
 #define AIRTRACK_HOSTNAME_MAX_LENGTH 24U
 /* Callsign, registration, or ICAO hex of a single flight to follow. */
 #define AIRTRACK_FOCUS_MAX_LENGTH 8U
+/* POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"; empty means UTC. */
+#define AIRTRACK_TZ_MAX_LENGTH 47U
 
 typedef enum {
     AIRTRACK_DISTANCE_NM = 0,
@@ -45,6 +47,14 @@ typedef struct {
     /* Empty: track the nearest aircraft.  Otherwise only this flight
      * (matched against callsign, registration, or hex, case-insensitive). */
     char focus_flight[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
+    /* Night schedule (local time via timezone): dim the panel and optionally
+     * switch the accessory LED off between night_start and night_end. */
+    bool night_enabled;
+    uint16_t night_start_min;   /* minutes after local midnight, 0..1439 */
+    uint16_t night_end_min;     /* may be earlier than start (wraps) */
+    uint8_t night_brightness_percent; /* 0..50 */
+    bool night_led_off;
+    char timezone[AIRTRACK_TZ_MAX_LENGTH + 1U];
 } airtrack_settings_t;
 
 typedef struct {
@@ -69,6 +79,10 @@ esp_err_t airtrack_config_clear_wifi(void);
 
 /** Fill tracker settings with conservative production defaults. */
 void airtrack_settings_defaults(airtrack_settings_t *out);
+
+/** True when the night schedule is active at the given local minutes-of-day. */
+bool airtrack_settings_is_night(const airtrack_settings_t *settings,
+                                int minutes_of_day);
 
 /** Validate every tracker setting, including hostname and location bounds. */
 esp_err_t airtrack_settings_validate(const airtrack_settings_t *settings);

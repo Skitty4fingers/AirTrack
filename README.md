@@ -12,7 +12,20 @@ or collision-warning device.
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.3.0.
+The connected unit is running AirTrack 1.4.0.
+
+Changes in 1.4.0:
+
+- Night schedule (Display card): between two local times (default 23:00-07:00)
+  the panel dims to a separate night brightness (default 5%) and, optionally,
+  the status LED switches off. Requires a timezone: pick one from the preset
+  list (the browser's zone is pre-selected when none is saved) or enter a
+  POSIX TZ rule; the System card shows the device's local time and whether
+  night mode is active. Settings schema 3; older records migrate.
+- Log records and the top-five table now carry the route; a sighting is held
+  up to 20 s so the lookup can land before the record is written.
+- `/api/v1/config` returns the focus flight, retention, night schedule, and
+  timezone; `/api/v1/status` adds `night` and `local_minutes`.
 
 Changes in 1.3.0:
 

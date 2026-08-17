@@ -36,6 +36,8 @@ typedef struct {
     uint32_t free_heap_bytes;
     uint32_t minimum_free_heap_bytes;
     bool time_synchronized;
+    bool night;
+    int local_minutes;      /* local minutes-of-day, -1 until time is valid */
     uint32_t polls_ok;
     uint32_t polls_failed;
     uint32_t tls_connections;

@@ -21,7 +21,7 @@ main{padding:20px 20px 10px;flex:1;min-width:0}
 .card{min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;box-shadow:0 1px 2px #0d2a4d0f}
 .card h2{margin:0 0 12px;font-size:1.12rem;font-weight:700;display:flex;justify-content:space-between;align-items:baseline}
 .card h2 .val{color:var(--muted);font-weight:500;font-size:1rem}
-.card h3{margin:18px 0 8px;font-size:.98rem;font-weight:600}
+.card h3{margin:18px 0 8px;font-size:.98rem;font-weight:600;display:flex;justify-content:space-between;align-items:baseline}.card h3 .val{color:var(--muted);font-weight:500;font-size:.92rem}
 .sub{margin:4px 0 0;color:var(--muted)}
 .row{display:flex;justify-content:space-between;align-items:center;gap:16px}.row h2{margin:0}
 .nearest{display:grid;grid-template-columns:150px minmax(0,1fr);gap:20px;align-items:center;min-width:0}.who{min-width:0}
@@ -46,7 +46,7 @@ tr.emergency td{color:var(--bad)}
 .hint{color:var(--muted);font-size:.86rem;line-height:1.5;margin:8px 0 0}
 label.field{display:block;font-size:.92rem;color:var(--muted)}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-input[type=text],input[type=number],select{width:100%;margin-top:6px;padding:11px 12px;border:1px solid #c9d3e0;border-radius:8px;font:inherit;color:var(--ink);background:#fff}
+input[type=text],input[type=number],input[type=time],select{width:100%;margin-top:6px;padding:11px 12px;border:1px solid #c9d3e0;border-radius:8px;font:inherit;color:var(--ink);background:#fff}
 input:focus,select:focus{outline:2px solid #1e88e555;border-color:var(--blue)}
 input[type=range]{width:100%;accent-color:var(--blue);margin:14px 0 4px}
 .range-row{display:grid;grid-template-columns:1fr 92px auto;gap:12px;align-items:center}

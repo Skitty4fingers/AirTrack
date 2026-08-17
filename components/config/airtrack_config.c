@@ -20,11 +20,13 @@
 
 #define AP_PREFIX "AirTrack-"
 #define SETTINGS_MAGIC 0x4b525441UL /* "ATRK" in little-endian storage. */
-/* Schema 1 records are 80 bytes; schema 2 appends the focus flight. Older
- * records decode with an empty focus; newer/unknown schemas are rejected. */
-#define SETTINGS_SCHEMA 2U
-#define SETTINGS_WIRE_BYTES 96U
+/* Schema 1 records are 80 bytes; schema 2 (96) appends the focus flight;
+ * schema 3 (136) appends the night schedule and timezone.  Older records
+ * decode with defaults for the missing fields; unknown schemas are rejected. */
+#define SETTINGS_SCHEMA 3U
+#define SETTINGS_WIRE_BYTES 136U
 #define SETTINGS_V1_WIRE_BYTES 80U
+#define SETTINGS_V2_WIRE_BYTES 96U
 
 enum {
     WIRE_MAGIC = 0,
@@ -49,6 +51,13 @@ enum {
     WIRE_HOSTNAME = 46,
     WIRE_FOCUS_LENGTH = 70,   /* schema 2 */
     WIRE_FOCUS = 71,          /* schema 2, up to 8 bytes */
+    WIRE_NIGHT_ENABLED = 80,  /* schema 3 */
+    WIRE_NIGHT_START = 81,
+    WIRE_NIGHT_END = 83,
+    WIRE_NIGHT_BRIGHTNESS = 85,
+    WIRE_NIGHT_LED_OFF = 86,
+    WIRE_TZ_LENGTH = 87,
+    WIRE_TZ = 88,             /* up to 47 bytes */
 };
 
 static const char AP_PASSWORD_ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -115,6 +124,10 @@ void airtrack_settings_defaults(airtrack_settings_t *out)
         .log_heartbeat_s = 60U,
         .retention_days = 30U,
         .retention_mib = 64U,
+        .night_start_min = 23U * 60U,
+        .night_end_min = 7U * 60U,
+        .night_brightness_percent = 5U,
+        .night_led_off = true,
     };
     memcpy(out->hostname, "airtrack", sizeof("airtrack"));
 }
@@ -133,6 +146,28 @@ static bool focus_flight_valid(const char *focus)
         const bool ok = (byte >= 'A' && byte <= 'Z') ||
                         (byte >= '0' && byte <= '9') || byte == '-' ||
                         (index == 0U && byte == '~');
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool timezone_valid(const char *timezone)
+{
+    if (timezone == NULL) {
+        return false;
+    }
+    const size_t length = strnlen(timezone, AIRTRACK_TZ_MAX_LENGTH + 1U);
+    if (length > AIRTRACK_TZ_MAX_LENGTH) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        const char byte = timezone[index];
+        const bool ok = (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+                        (byte >= '0' && byte <= '9') || byte == '+' || byte == '-' ||
+                        byte == ',' || byte == '.' || byte == '/' || byte == ':' ||
+                        byte == '<' || byte == '>' || byte == '_';
         if (!ok) {
             return false;
         }
@@ -179,7 +214,10 @@ esp_err_t airtrack_settings_validate(const airtrack_settings_t *settings)
         settings->retention_days < 1U || settings->retention_days > 365U ||
         settings->retention_mib < 8U || settings->retention_mib > 4096U ||
         !hostname_valid(settings->hostname) ||
-        !focus_flight_valid(settings->focus_flight)) {
+        !focus_flight_valid(settings->focus_flight) ||
+        settings->night_start_min >= 1440U || settings->night_end_min >= 1440U ||
+        settings->night_brightness_percent > 50U ||
+        !timezone_valid(settings->timezone)) {
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
@@ -212,6 +250,14 @@ static void encode_settings(const airtrack_settings_t *settings,
     const size_t focus_length = strlen(settings->focus_flight);
     wire[WIRE_FOCUS_LENGTH] = (uint8_t)focus_length;
     memcpy(wire + WIRE_FOCUS, settings->focus_flight, focus_length);
+    wire[WIRE_NIGHT_ENABLED] = settings->night_enabled ? 1U : 0U;
+    put_u16(wire + WIRE_NIGHT_START, settings->night_start_min);
+    put_u16(wire + WIRE_NIGHT_END, settings->night_end_min);
+    wire[WIRE_NIGHT_BRIGHTNESS] = settings->night_brightness_percent;
+    wire[WIRE_NIGHT_LED_OFF] = settings->night_led_off ? 1U : 0U;
+    const size_t tz_length = strlen(settings->timezone);
+    wire[WIRE_TZ_LENGTH] = (uint8_t)tz_length;
+    memcpy(wire + WIRE_TZ, settings->timezone, tz_length);
     put_u32(wire + WIRE_CRC, 0U);
     put_u32(wire + WIRE_CRC,
             esp_crc32_le(UINT32_MAX, wire, SETTINGS_WIRE_BYTES));
@@ -227,7 +273,8 @@ static bool decode_settings(const uint8_t *wire, size_t length,
     }
     const uint16_t schema = get_u16(wire + WIRE_SCHEMA);
     if (!((schema == 1U && length == SETTINGS_V1_WIRE_BYTES) ||
-          (schema == 2U && length == SETTINGS_WIRE_BYTES)) ||
+          (schema == 2U && length == SETTINGS_V2_WIRE_BYTES) ||
+          (schema == 3U && length == SETTINGS_WIRE_BYTES)) ||
         get_u16(wire + WIRE_LENGTH) != length) {
         return false;
     }
@@ -268,6 +315,25 @@ static bool decode_settings(const uint8_t *wire, size_t length,
         }
         memcpy(decoded.focus_flight, wire + WIRE_FOCUS, focus_length);
         decoded.focus_flight[focus_length] = '\0';
+    }
+    if (schema >= 3U) {
+        const uint8_t tz_length = wire[WIRE_TZ_LENGTH];
+        if (tz_length > AIRTRACK_TZ_MAX_LENGTH || wire[WIRE_NIGHT_ENABLED] > 1U ||
+            wire[WIRE_NIGHT_LED_OFF] > 1U) {
+            return false;
+        }
+        decoded.night_enabled = wire[WIRE_NIGHT_ENABLED] == 1U;
+        decoded.night_start_min = get_u16(wire + WIRE_NIGHT_START);
+        decoded.night_end_min = get_u16(wire + WIRE_NIGHT_END);
+        decoded.night_brightness_percent = wire[WIRE_NIGHT_BRIGHTNESS];
+        decoded.night_led_off = wire[WIRE_NIGHT_LED_OFF] == 1U;
+        memcpy(decoded.timezone, wire + WIRE_TZ, tz_length);
+        decoded.timezone[tz_length] = '\0';
+    } else {
+        decoded.night_start_min = 23U * 60U;
+        decoded.night_end_min = 7U * 60U;
+        decoded.night_brightness_percent = 5U;
+        decoded.night_led_off = true;
     }
     if ((wire[WIRE_LOCATION_CONFIGURED] > 1U) ||
         (wire[WIRE_INCLUDE_GROUND] > 1U) ||
@@ -636,4 +702,22 @@ esp_err_t airtrack_config_save_settings(const airtrack_settings_t *settings)
     }
     nvs_close(handle);
     return err;
+}
+
+bool airtrack_settings_is_night(const airtrack_settings_t *settings,
+                                int minutes_of_day)
+{
+    if (settings == NULL || !settings->night_enabled || minutes_of_day < 0 ||
+        minutes_of_day >= 1440) {
+        return false;
+    }
+    const int start = settings->night_start_min;
+    const int end = settings->night_end_min;
+    if (start == end) {
+        return false;
+    }
+    if (start < end) {
+        return minutes_of_day >= start && minutes_of_day < end;
+    }
+    return minutes_of_day >= start || minutes_of_day < end; /* wraps midnight */
 }

@@ -1,4 +1,4 @@
-# AirTrack 1.3.0 release checklist
+# AirTrack 1.4.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,10 +10,13 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,758,928 bytes (both 3,904 KiB OTA
+- [x] Image is below the 3.5 MiB gate: 1,766,448 bytes (both 3,904 KiB OTA
   slots retain 56 percent free).
 - [x] Artifact SHA-256:
-  `05374d2b5da253318f5190e0016ed0adf7a53f89ff90e02d55d90b8e15524e44`.
+  `0a90af784e77390cd3c3c9e54bb68ddb5af33a1771a76924bee91902d0ab2606`.
+- [x] 1.4.0 on-target: night mode reported active inside a test window and
+  inactive after restoring 23:00-07:00 America/Los_Angeles; a sighting for
+  UAL2058 was held and logged with `route:"IAD-IAH"`.
 - [x] 1.3.0 on-target: adsbdb route lookups resolve airline callsigns (e.g.
   SKW3363 -> LAX) and cache unknown GA registrations; focus mode set/cleared
   from the API narrows the tracked set to one aircraft; the sighting log
@@ -59,6 +62,8 @@ the physical device, its real fixed location, or elapsed soak time.
   selection, rejected password, and successful recovery from a phone.
 - [ ] Disconnect Internet while retaining Wi-Fi and verify stale/offline state
   without exposing the setup portal on the station LAN.
+- [ ] With the night window set to include the current local time, confirm
+  the panel dims and the LED goes dark; restore the real window afterwards.
 - [ ] Confirm the accessory LED is blue while tracking and orange in setup or
   when the feed is stale/offline.
 - [ ] Set *Track a single flight* to a nearby airliner callsign and confirm the
@@ -72,7 +77,7 @@ the physical device, its real fixed location, or elapsed soak time.
 ## Deliberately deferred from 1.0.0
 
 - Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.3.0 updates use native USB.
+  but 1.4.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.
