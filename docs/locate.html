@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AirTrack · locate</title>
+<meta name="robots" content="noindex">
+<style>
+  :root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--navy:#0d2a4d;--blue:#1e88e5;--ink:#12213a;--muted:#5d6b80;--line:#e3e8ef;--bg:#f3f5f8;--ok:#1aa34a;--bad:#d93737}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);min-height:100vh;display:grid;place-items:center;padding:20px}
+  main{width:min(100%,460px)}
+  .brand{display:flex;align-items:center;gap:10px;font-size:1.4rem;font-weight:800;color:var(--navy);margin-bottom:12px}
+  .brand svg{width:26px;height:26px;fill:var(--navy)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 1px 2px #0d2a4d0f}
+  h1{font-size:1.2rem;margin:0 0 6px}p{line-height:1.5;color:var(--muted);margin:.4rem 0}
+  .coords{font-size:1.5rem;font-weight:800;color:var(--blue);margin:14px 0 4px;overflow-wrap:anywhere}
+  .acc{color:var(--muted);font-size:.9rem}
+  label{display:block;font-size:.9rem;color:var(--muted);margin:14px 0 6px}
+  input{width:100%;padding:11px 12px;border:1px solid #c9d3e0;border-radius:8px;font:inherit}
+  button,a.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;padding:12px 18px;border-radius:8px;border:1px solid var(--blue);background:var(--blue);color:#fff;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+  button.ghost{background:#fff;color:var(--ink);border-color:#c9d3e0}
+  .status{margin-top:10px;font-size:.92rem}.status.ok{color:var(--ok)}.status.bad{color:var(--bad)}
+  footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:16px}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>AirTrack locate</div>
+  <div class="card">
+    <h1>Share this device's location with AirTrack</h1>
+    <p>Browsers only hand out location on secure pages, so this page runs on GitHub Pages over HTTPS, reads your position once, and sends you back to AirTrack on your home network with the coordinates filled in. Nothing is stored or sent anywhere else.</p>
+    <div id="result" hidden>
+      <div class="coords" id="coords">—</div>
+      <div class="acc" id="acc"></div>
+    </div>
+    <div class="status" id="status">Asking the browser for your location…</div>
+    <button id="again" class="ghost" type="button" hidden>Try again</button>
+    <label for="back">AirTrack address (as shown on its LCD)</label>
+    <input id="back" type="url" placeholder="http://10.0.0.104/" inputmode="url" autocomplete="off">
+    <a id="send" class="btn" hidden>Send to AirTrack</a>
+    <p class="acc">Only addresses on a home network (10.x, 192.168.x, 172.16–31.x, or a <code>.local</code> name) are accepted.</p>
+  </div>
+  <footer>Part of <a href="https://github.com/Skitty4fingers/AirTrack">AirTrack</a> · Data on the device comes from adsb.fi</footer>
+</main>
+<script>
+(function () {
+  'use strict';
+  var params = new URLSearchParams(location.search);
+  var backInput = document.getElementById('back');
+  var status = document.getElementById('status');
+  var send = document.getElementById('send');
+  var again = document.getElementById('again');
+  var pos = null;
+
+  /* Accept only local-network destinations so this page cannot be used as an open redirect. */
+  function localUrl(text) {
+    try {
+      var u = new URL(text);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      var h = u.hostname;
+      var ok = /^10\.\d+\.\d+\.\d+$/.test(h) || /^192\.168\.\d+\.\d+$/.test(h) ||
+               /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(h) || /\.local$/.test(h) || h === 'airtrack';
+      if (!ok) return null;
+      u.hash = ''; u.search = '';
+      return u.origin + '/';
+    } catch (e) { return null; }
+  }
+  var back = localUrl(params.get('back') || '') || (localStorage.getItem('airtrack-back') || '');
+  backInput.value = back || 'http://airtrack.local/';
+
+  function update() {
+    var target = localUrl(backInput.value);
+    if (pos && target) {
+      localStorage.setItem('airtrack-back', target);
+      send.href = target + '?lat=' + pos.lat.toFixed(6) + '&lon=' + pos.lon.toFixed(6) + '#location';
+      send.hidden = false;
+    } else {
+      send.hidden = true;
+    }
+  }
+  backInput.oninput = update;
+
+  function locate() {
+    again.hidden = true;
+    status.className = 'status'; status.textContent = 'Asking the browser for your location…';
+    if (!navigator.geolocation) { status.className = 'status bad'; status.textContent = 'This browser has no geolocation support.'; return; }
+    navigator.geolocation.getCurrentPosition(function (p) {
+      pos = { lat: p.coords.latitude, lon: p.coords.longitude };
+      document.getElementById('coords').textContent = pos.lat.toFixed(6) + ', ' + pos.lon.toFixed(6);
+      document.getElementById('acc').textContent = 'accuracy ±' + Math.round(p.coords.accuracy) + ' m';
+      document.getElementById('result').hidden = false;
+      status.className = 'status ok'; status.textContent = 'Got it. Check the AirTrack address, then send.';
+      again.hidden = false; update();
+    }, function (e) {
+      status.className = 'status bad';
+      status.textContent = e.code === 1 ? 'Location permission was denied. Allow it for this site and try again.'
+                          : e.code === 2 ? 'Position unavailable right now.' : 'Timed out waiting for a position.';
+      again.hidden = false;
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+  }
+  again.onclick = locate;
+  locate();
+})();
+</script>
+</body>
+</html>

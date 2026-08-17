@@ -70,13 +70,35 @@
     if (la) la.value = (+lat).toFixed(6); if (lo) lo.value = (+lon).toFixed(6);
     var h = $('geohint'); if (h) { h.textContent = 'Filled ' + (+lat).toFixed(5) + ', ' + (+lon).toFixed(5) + ' — press Save changes to apply.'; }
   }
+  /* HTTPS helper page (docs/locate.html on GitHub Pages): browsers only share
+     location on secure pages, so it reads the position there and navigates
+     back to this dashboard with ?lat=&lon= filled in. */
+  var HELPER = 'https://skitty4fingers.github.io/AirTrack/locate.html';
+  function helperLink() {
+    var a = document.createElement('a'); a.href = HELPER + '?back=' + encodeURIComponent(location.origin + '/');
+    a.textContent = 'open the HTTPS locate helper'; a.rel = 'noopener'; return a;
+  }
+  (function fromHelper() {
+    var q = new URLSearchParams(location.search), lat = q.get('lat'), lon = q.get('lon');
+    if (lat === null || lon === null) return;
+    if (isFinite(+lat) && isFinite(+lon) && Math.abs(+lat) <= 90 && Math.abs(+lon) <= 180) {
+      setLatLon(lat, lon);
+      var h = $('geohint'); if (h) h.textContent = 'Location received from the helper: ' + (+lat).toFixed(5) + ', ' + (+lon).toFixed(5) + ' — press Save changes to apply.';
+      var loc = $('location'); if (loc) loc.scrollIntoView();
+    }
+    history.replaceState(null, '', location.pathname + location.hash);
+  })();
   var geo = $('geo');
   if (geo) geo.onclick = function () {
     var h = $('geohint');
+    if (!window.isSecureContext) {
+      if (h) { h.textContent = 'This page is plain HTTP, so the browser will not share location here — '; h.appendChild(helperLink()); h.appendChild(document.createTextNode(' (it asks once and brings you straight back), or paste coordinates.')); }
+      return;
+    }
     if (!navigator.geolocation) { if (h) h.textContent = 'This browser has no geolocation API. Paste coordinates instead.'; return; }
     if (h) h.textContent = 'Asking the browser for your location…';
     navigator.geolocation.getCurrentPosition(function (p) { setLatLon(p.coords.latitude, p.coords.longitude); },
-      function (e) { if (h) h.textContent = (e.code === 1 ? 'Location permission was denied.' : 'Location unavailable') + ' Browsers only share location on HTTPS or localhost pages; paste coordinates from a maps app instead (Google Maps: right-click the spot → click the coordinates to copy).'; },
+      function (e) { if (h) { h.textContent = (e.code === 1 ? 'Location permission was denied. ' : 'Location unavailable. ') + 'You can '; h.appendChild(helperLink()); h.appendChild(document.createTextNode(' or paste coordinates from a maps app.')); } },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
   };
   var paste = $('paste');

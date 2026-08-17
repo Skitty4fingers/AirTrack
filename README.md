@@ -50,9 +50,13 @@ Changes in 1.3.0:
   distance to go, and an ETA estimated from ground speed. Scheduled
   departure/arrival times are not available from any free source; wire a paid
   schedule API if you need on-time status.
-- Location helper: *Use my location* (browser geolocation; most browsers only
-  allow it on HTTPS, so it may be refused on the local page) and a paste box
-  that accepts `lat, lon` or a maps link with `@lat,lon`.
+- Location helper: *Use my location* (browser geolocation) and a paste box
+  that accepts `lat, lon` or a maps link with `@lat,lon`. Because browsers only
+  share location on HTTPS pages, the button hands off to
+  [`docs/locate.html`](docs/locate.html), served over HTTPS from GitHub Pages at
+  <https://skitty4fingers.github.io/AirTrack/locate.html>; that page reads the
+  position once and navigates back to the dashboard with `?lat=&lon=` filled
+  in (only home-network return addresses are accepted).
 - Accessory LED mirrors the display: blue while the feed is healthy, orange
   when connecting, stale, offline, or in setup.
 - SD sighting log: every distinct aircraft entering the tracked set is written
