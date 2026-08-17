@@ -15,6 +15,8 @@ extern "C" {
 #define CONNECTIVITY_IPV4_TEXT_MAX_BYTES 15U
 #define CONNECTIVITY_SCAN_MAX_RESULTS 16U
 #define CONNECTIVITY_SOFTAP_IPV4 "192.168.4.1"
+#define CONNECTIVITY_DEFAULT_RECONNECT_DELAY_MS 500U
+#define CONNECTIVITY_MAX_RECONNECT_DELAY_MS 120000U
 
 typedef enum {
     CONNECTIVITY_MODE_OFF = 0,
@@ -90,6 +92,18 @@ esp_err_t connectivity_scan_networks(connectivity_network_t *networks,
 
 /** Copy a coherent, fixed-size status snapshot. Safe from any task. */
 esp_err_t connectivity_get_status(connectivity_status_t *status);
+
+/**
+ * Set the pause between a station disconnect and the next connect attempt.
+ *
+ * Normal operation uses CONNECTIVITY_DEFAULT_RECONNECT_DELAY_MS.  While the
+ * recovery setup AP is running alongside the station, a longer pause keeps
+ * the AP usable instead of scanning continuously for an absent router.
+ */
+void connectivity_set_reconnect_delay(uint32_t delay_ms);
+
+/** Re-read the station RSSI while connected. Cheap; call every few seconds. */
+esp_err_t connectivity_refresh_rssi(void);
 
 #ifdef __cplusplus
 }

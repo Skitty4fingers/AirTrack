@@ -1,7 +1,10 @@
 # AirTrack firmware plan
 
-Status: the 1.0.0 production candidate is built and flashed on the connected
-Waveshare ESP32-C6-LCD-1.47 (non-touch, C6FH8 hardware revision). Phases 0-4
+Status: 1.1.0 is built and flashed on the connected Waveshare
+ESP32-C6-LCD-1.47 (non-touch, C6FH8 hardware revision). Since 1.0.0 the ADS-B
+client reuses its TLS connection, the state machine returns from recovery
+setup to tracking on its own, the LCD and LAN dashboard were redesigned, and
+the setup portal exposes the remaining tracker/display settings. Phases 0-4
 and the core of Phases 5-6 are implemented: board support, provisioning,
 versioned settings, verified-HTTPS ADS-B polling, bounded parsing/ranking,
 production LCD states, the LAN dashboard/API, and optional SD event logging.
@@ -161,8 +164,9 @@ ONLINE
   -> repeated failure for 60 s: RECOVERY_AP_STA
 
 RECOVERY_AP_STA
-  -> show QR/setup credentials while periodically retrying STA
-  -> configured STA gets IPv4 and remains healthy: stop AP and return ONLINE
+  -> show QR/setup credentials while retrying STA every 20 s
+  -> configured STA holds IPv4 for 5 s: stop AP/DNS/portal and return ONLINE
+  -> BOOT held 5 s: restart
 ```
 
 Additional transitions:

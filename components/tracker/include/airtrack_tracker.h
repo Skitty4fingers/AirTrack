@@ -54,6 +54,10 @@ typedef struct {
     float distance_nm;
     float bearing_deg;
     float seen_pos_s;
+    char squawk[5];
+    char category[3];
+    /* True when the transponder reports any emergency other than "none". */
+    bool emergency;
 } airtrack_aircraft_t;
 
 typedef struct {

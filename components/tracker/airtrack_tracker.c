@@ -192,7 +192,7 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
     static const char *consumed[] = {
         "hex", "flight", "r", "t", "desc", "lat", "lon", "dst",
         "dir", "seen_pos", "alt_baro", "alt_geom", "baro_rate", "gs",
-        "track",
+        "track", "squawk", "category", "emergency",
     };
     for (size_t index = 0U; index < sizeof(consumed) / sizeof(consumed[0]);
          ++index) {
@@ -297,6 +297,16 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
     if (finite_number(rate) && fabs(rate->valuedouble) <= 20000.0) {
         aircraft.vertical_rate_valid = true;
         aircraft.vertical_rate_fpm = (int32_t)lround(rate->valuedouble);
+    }
+    (void)copy_display_string(aircraft.squawk, sizeof(aircraft.squawk),
+                              unique_item(root, "squawk", &duplicate), true);
+    (void)copy_display_string(aircraft.category, sizeof(aircraft.category),
+                              unique_item(root, "category", &duplicate), true);
+    const cJSON *emergency = unique_item(root, "emergency", &duplicate);
+    if (cJSON_IsString(emergency) && emergency->valuestring != NULL &&
+        emergency->valuestring[0] != '\0' &&
+        strcmp(emergency->valuestring, "none") != 0) {
+        aircraft.emergency = true;
     }
 
     insert_candidate(parser, &aircraft);

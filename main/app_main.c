@@ -24,12 +24,15 @@
 #include "mdns.h"
 
 #define WIFI_RECOVERY_DELAY_MS 60000U
-#define NETWORK_STATUS_INTERVAL_MS 500U
+#define SUPERVISOR_INTERVAL_MS 250U
 #define SETTINGS_RESTART_DELAY_MS 2500U
 #define SETTINGS_RESTART_STACK_BYTES 2048U
 #define STATUS_WEB_RETRY_MS 5000U
 #define UI_TRACKING_INTERVAL_MS 1000U
+#define RSSI_REFRESH_INTERVAL_MS 5000U
 #define BOOT_SETUP_HOLD_MS 5000U
+#define RECOVERY_RECONNECT_DELAY_MS 20000U
+#define RECOVERY_STABLE_MS 5000U
 #define VALID_TIME_EPOCH 1704067200L
 
 static const char *TAG = "airtrack";
@@ -41,12 +44,24 @@ static StackType_t s_restart_task_stack[
 
 static board_status_t s_board_status;
 static uint32_t s_flash_bytes;
+static airtrack_config_t s_config;
 static airtrack_settings_t s_settings;
 static bool s_mdns_started;
 static bool s_sntp_started;
+static bool s_tracking_started;
 static connectivity_network_t
     s_scanned_networks[CONNECTIVITY_SCAN_MAX_RESULTS];
 static setup_web_network_t s_web_networks[SETUP_WEB_MAX_NETWORKS];
+
+typedef enum {
+    /* No credentials: stay in isolated setup until the user saves some. */
+    SETUP_REASON_UNCONFIGURED = 0,
+    /* User held BOOT: isolated setup; a second hold restarts normally. */
+    SETUP_REASON_BUTTON,
+    /* Saved Wi-Fi unavailable: setup AP plus a throttled station retry;
+     * returns to tracking automatically once the network is back. */
+    SETUP_REASON_RECOVERY,
+} setup_reason_t;
 
 _Static_assert(CONNECTIVITY_SCAN_MAX_RESULTS == SETUP_WEB_MAX_NETWORKS,
                "Connectivity and setup web scan capacities must match");
@@ -88,29 +103,28 @@ static esp_err_t launch_settings_restart(void)
     return task != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-static esp_err_t save_device_settings(const char *ssid, const char *password,
-                                      int32_t latitude_e7,
-                                      int32_t longitude_e7,
-                                      uint16_t radius_nm,
+static esp_err_t save_device_settings(const setup_web_submission_t *submission,
                                       void *user_context)
 {
     (void)user_context;
-
-    if (!claim_settings_restart()) {
+    if (submission == NULL || !claim_settings_restart()) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    airtrack_settings_t updated = s_settings;
-    updated.location_configured = true;
-    updated.latitude_e7 = latitude_e7;
-    updated.longitude_e7 = longitude_e7;
-    updated.radius_nm = radius_nm;
+    airtrack_settings_t updated = submission->settings;
+    /* Hostname and retention are not user-editable from the form. */
+    memcpy(updated.hostname, s_settings.hostname, sizeof(updated.hostname));
+    updated.retention_days = s_settings.retention_days;
+    updated.retention_mib = s_settings.retention_mib;
+    updated.log_heartbeat_s = s_settings.log_heartbeat_s;
+    updated.max_position_age_s = s_settings.max_position_age_s;
     esp_err_t err = airtrack_settings_validate(&updated);
     if (err == ESP_OK) {
         err = airtrack_config_save_settings(&updated);
     }
     if (err == ESP_OK) {
-        err = airtrack_config_save_wifi(ssid, password);
+        err = airtrack_config_save_wifi(submission->ssid,
+                                        submission->password);
     }
     if (err == ESP_OK) {
         err = launch_settings_restart();
@@ -121,7 +135,7 @@ static esp_err_t save_device_settings(const char *ssid, const char *password,
         return err;
     }
 
-    ESP_LOGI(TAG, "Wi-Fi settings saved; restart scheduled");
+    ESP_LOGI(TAG, "Wi-Fi and tracker settings saved; restart scheduled");
     return ESP_OK;
 }
 
@@ -201,17 +215,26 @@ static status_web_snapshot_t make_status_web_snapshot(
     const connectivity_status_t *status,
     const airtrack_snapshot_t *aircraft)
 {
+    adsb_client_stats_t stats = {0};
+    (void)adsb_client_get_stats(&stats);
+    storage_logger_status_t logger = {0};
+    (void)storage_logger_get_status(&logger);
     return (status_web_snapshot_t) {
         .ssid = status->ssid,
         .ip_address = status->ip_address,
         .rssi_available = status->rssi_available,
         .rssi_dbm = status->rssi_dbm,
         .sd_mounted = s_board_status.sd_mounted,
+        .sd_logging_enabled = logger.enabled,
+        .sd_records_written = logger.records_written,
         .flash_bytes = s_flash_bytes,
         .uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL),
         .free_heap_bytes = heap_caps_get_free_size(MALLOC_CAP_8BIT),
         .minimum_free_heap_bytes = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
         .time_synchronized = time(NULL) >= VALID_TIME_EPOCH,
+        .polls_ok = stats.polls_ok,
+        .polls_failed = stats.polls_failed,
+        .tls_connections = stats.connections,
         .settings = &s_settings,
         .aircraft = aircraft,
     };
@@ -248,12 +271,62 @@ static esp_err_t stop_status_web_if_running(void)
     return status_web_is_running() ? status_web_stop() : ESP_OK;
 }
 
-static esp_err_t enter_setup_mode(const airtrack_config_t *config)
+static void set_rgb(uint8_t red, uint8_t green, uint8_t blue)
+{
+    if (s_board_status.rgb_ready) {
+        (void)board_rgb_set(red, green, blue);
+    }
+}
+
+static bool interval_elapsed(TickType_t started, uint32_t interval_ms)
+{
+    return (TickType_t)(xTaskGetTickCount() - started) >=
+           pdMS_TO_TICKS(interval_ms);
+}
+
+/*
+ * Five-second BOOT hold detector shared by both modes.  It arms only after
+ * the button has been seen released, so the hold that entered setup mode
+ * cannot immediately count again as a request to leave it.
+ */
+typedef struct {
+    bool armed;
+    bool active;
+    bool fired;
+    TickType_t since;
+} boot_hold_t;
+
+static bool boot_hold_triggered(boot_hold_t *hold)
+{
+    if (!board_boot_button_is_pressed()) {
+        hold->armed = true;
+        hold->active = false;
+        hold->fired = false;
+        return false;
+    }
+    if (!hold->armed) {
+        return false;
+    }
+    if (!hold->active) {
+        hold->active = true;
+        hold->since = xTaskGetTickCount();
+        return false;
+    }
+    if (!hold->fired && interval_elapsed(hold->since, BOOT_SETUP_HOLD_MS)) {
+        hold->fired = true;
+        return true;
+    }
+    return false;
+}
+
+static esp_err_t enter_setup_mode(setup_reason_t reason)
 {
     esp_err_t err = stop_status_web_if_running();
     if (err != ESP_OK) {
         return err;
     }
+    (void)adsb_client_set_online(false);
+    (void)storage_logger_stop();
 
     err = connectivity_init();
     if (err != ESP_OK) {
@@ -266,26 +339,29 @@ static esp_err_t enter_setup_mode(const airtrack_config_t *config)
         return err;
     }
     if (connectivity_status.station_enabled) {
+        /* Stop the station either way: a clean scan needs an idle radio, and
+         * recovery re-adds it below with a gentle retry cadence. */
         err = connectivity_stop_station();
         if (err != ESP_OK) {
             return err;
         }
-        ESP_LOGI(TAG, "Station paused for isolated setup mode");
     }
 
     const size_t nearby_network_count = scan_nearby_networks();
 
-    err = connectivity_start_softap(config->ap_ssid, config->ap_password);
+    err = connectivity_start_softap(s_config.ap_ssid, s_config.ap_password);
     if (err != ESP_OK) {
         return err;
     }
 
     const setup_web_config_t web_config = {
-        .ap_ssid = config->ap_ssid,
-        .ap_password = config->ap_password,
+        .ap_ssid = s_config.ap_ssid,
+        .ap_password = s_config.ap_password,
         .ap_ip_address = CONNECTIVITY_SOFTAP_IPV4,
         .nearby_networks = s_web_networks,
         .nearby_network_count = nearby_network_count,
+        .current_ssid = s_config.wifi_configured ? s_config.wifi_ssid : NULL,
+        .current_settings = &s_settings,
         .save_config = save_device_settings,
     };
     if (!setup_web_is_running()) {
@@ -303,105 +379,140 @@ static esp_err_t enter_setup_mode(const airtrack_config_t *config)
         }
     }
 
-    err = ui_diagnostic_show_setup(config->ap_ssid, config->ap_password,
-                                   CONNECTIVITY_SOFTAP_IPV4);
+    err = ui_diagnostic_show_setup(s_config.ap_ssid, s_config.ap_password,
+                                   CONNECTIVITY_SOFTAP_IPV4,
+                                   reason == SETUP_REASON_RECOVERY);
     if (err != ESP_OK) {
         return err;
     }
+    s_tracking_started = false;
 
-    if (s_board_status.rgb_ready) {
-        (void)board_rgb_set(8, 3, 0);
+    if (reason == SETUP_REASON_RECOVERY) {
+        connectivity_set_reconnect_delay(RECOVERY_RECONNECT_DELAY_MS);
+        err = connectivity_start_station(s_config.wifi_ssid,
+                                         s_config.wifi_password);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Recovery station retry unavailable: %s",
+                     esp_err_to_name(err));
+        }
     }
-    ESP_LOGI(TAG, "Setup mode ready on %s", config->ap_ssid);
+
+    set_rgb(8, 3, 0);
+    ESP_LOGI(TAG, "Setup mode ready on %s (%s)", s_config.ap_ssid,
+             reason == SETUP_REASON_RECOVERY ? "recovery, station retrying"
+             : reason == SETUP_REASON_BUTTON ? "requested by BOOT"
+                                             : "no saved network");
     return ESP_OK;
 }
 
-static bool interval_elapsed(TickType_t started, uint32_t interval_ms)
+static esp_err_t leave_setup_mode(void)
 {
-    return (TickType_t)(xTaskGetTickCount() - started) >=
-           pdMS_TO_TICKS(interval_ms);
+    esp_err_t first_error = ESP_OK;
+    esp_err_t err = captive_dns_is_running() ? captive_dns_stop() : ESP_OK;
+    if (err != ESP_OK) {
+        first_error = err;
+    }
+    err = setup_web_is_running() ? setup_web_stop() : ESP_OK;
+    if (err != ESP_OK && first_error == ESP_OK) {
+        first_error = err;
+    }
+    err = connectivity_stop_softap();
+    if (err != ESP_OK && first_error == ESP_OK) {
+        first_error = err;
+    }
+    connectivity_set_reconnect_delay(CONNECTIVITY_DEFAULT_RECONNECT_DELAY_MS);
+    err = storage_logger_start(s_board_status.sd_mounted, &s_settings);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE &&
+        first_error == ESP_OK) {
+        first_error = err;
+    }
+    ESP_LOGI(TAG, "Setup mode closed; resuming tracking");
+    return first_error;
 }
 
-void app_main(void)
+/*
+ * Run setup mode.  Returns only for SETUP_REASON_RECOVERY, once the saved
+ * station has held an address for RECOVERY_STABLE_MS.  Other reasons end in
+ * a restart (BOOT hold or a saved form).
+ */
+static void run_setup_mode(setup_reason_t reason)
 {
-    ESP_ERROR_CHECK(airtrack_config_init());
-    airtrack_config_t config;
-    ESP_ERROR_CHECK(airtrack_config_load(&config));
-    ESP_ERROR_CHECK(airtrack_config_load_settings(&s_settings));
+    boot_hold_t boot_hold = {0};
+    bool station_seen_connected = false;
+    TickType_t connected_since = 0U;
+    for (;;) {
+        connectivity_status_t status;
+        ESP_ERROR_CHECK(connectivity_get_status(&status));
 
-    board_config_t board_config = BOARD_CONFIG_DEFAULT();
-    board_config.startup_brightness_percent = 0;
+        if (reason == SETUP_REASON_RECOVERY) {
+            if (status.connected) {
+                if (!station_seen_connected) {
+                    station_seen_connected = true;
+                    connected_since = xTaskGetTickCount();
+                    ESP_LOGI(TAG, "Saved network is back (%s); confirming",
+                             status.ip_address);
+                } else if (interval_elapsed(connected_since,
+                                            RECOVERY_STABLE_MS)) {
+                    return;
+                }
+            } else {
+                station_seen_connected = false;
+            }
+        }
 
-    ESP_ERROR_CHECK(board_init(&board_config));
-    ESP_ERROR_CHECK(board_get_status(&s_board_status));
-    ESP_ERROR_CHECK(esp_flash_get_size(NULL, &s_flash_bytes));
-
-    ESP_LOGI(TAG, "AirTrack hardware bring-up");
-    ESP_LOGI(TAG, "Flash: %lu MiB",
-             (unsigned long)(s_flash_bytes / (1024U * 1024U)));
-    ESP_LOGI(TAG, "LCD: %s", s_board_status.lcd_ready ? "ready" : "failed");
-    ESP_LOGI(TAG, "SD: %s",
-             s_board_status.sd_mounted ? "mounted" : "unavailable");
-
-    ESP_ERROR_CHECK(ui_diagnostic_init(board_lcd_panel_io(), board_lcd_panel()));
-    const ui_diagnostic_state_t diagnostic = make_diagnostic(
-        s_board_status.sd_mounted ? "Starting network" : "SD optional - network",
-        config.wifi_configured ? config.wifi_ssid : NULL, NULL);
-    ESP_ERROR_CHECK(ui_diagnostic_update(&diagnostic));
-
-    /* Let the first bounded LVGL strips reach the panel before illuminating it. */
-    vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_ERROR_CHECK(board_backlight_set(s_settings.brightness_percent));
-
-    if (s_board_status.rgb_ready) {
-        ESP_ERROR_CHECK(board_rgb_set(8, 3, 0));
+        if (boot_hold_triggered(&boot_hold)) {
+            ESP_LOGI(TAG, "BOOT hold in setup mode; restarting");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
+        vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_INTERVAL_MS));
     }
+}
 
-    ESP_ERROR_CHECK(connectivity_init());
-    if (!config.wifi_configured) {
-        ESP_ERROR_CHECK(enter_setup_mode(&config));
-        return;
-    }
-
-    start_time_sync();
-    ESP_ERROR_CHECK(adsb_client_start(&s_settings));
-    ESP_ERROR_CHECK(storage_logger_start(s_board_status.sd_mounted,
-                                         &s_settings));
-    ESP_ERROR_CHECK(connectivity_start_station(config.wifi_ssid,
-                                               config.wifi_password));
+/*
+ * Run normal tracking until either the BOOT button requests setup or the
+ * station has been unavailable for WIFI_RECOVERY_DELAY_MS.
+ */
+static setup_reason_t run_tracking_mode(void)
+{
     TickType_t disconnected_since = xTaskGetTickCount();
+#ifdef AIRTRACK_TEST_FORCE_RECOVERY_MS
+    /* Hardware test hook (see main/CMakeLists.txt): pretend the station was
+     * lost once, so the recovery AP+STA round trip can be exercised on a bench
+     * with the router still present. */
+    static bool forced_once;
+    const TickType_t entered = xTaskGetTickCount();
+#endif
     TickType_t last_status_web_attempt =
         xTaskGetTickCount() - pdMS_TO_TICKS(STATUS_WEB_RETRY_MS);
+    TickType_t last_rssi_refresh = xTaskGetTickCount();
     bool last_connected = false;
+    bool have_last = false;
     char last_ip[CONNECTIVITY_IPV4_TEXT_MAX_BYTES + 1U] = {0};
     uint64_t last_snapshot_sequence = UINT64_MAX;
     TickType_t last_ui_update = 0U;
     TickType_t last_web_update = 0U;
-    TickType_t boot_pressed_since = 0U;
-    bool boot_hold_active = false;
-    bool tracking_screen_started = false;
+    boot_hold_t boot_hold = {0};
 
     for (;;) {
         connectivity_status_t status;
         ESP_ERROR_CHECK(connectivity_get_status(&status));
 
-        const bool status_changed = status.connected != last_connected ||
+        const bool status_changed = !have_last ||
+                                    status.connected != last_connected ||
                                     strcmp(status.ip_address, last_ip) != 0;
         if (status_changed) {
-            if (!tracking_screen_started) {
+            have_last = true;
+            if (!s_tracking_started) {
                 const ui_diagnostic_state_t network_state = make_diagnostic(
                     status.connected ? "Wi-Fi connected" : "Connecting to Wi-Fi",
-                    status.ssid[0] != '\0' ? status.ssid : config.wifi_ssid,
+                    status.ssid[0] != '\0' ? status.ssid : s_config.wifi_ssid,
                     status.connected ? status.ip_address : NULL);
-                ESP_ERROR_CHECK(ui_diagnostic_update(&network_state));
+                (void)ui_diagnostic_update(&network_state);
             }
             (void)snprintf(last_ip, sizeof(last_ip), "%s", status.ip_address);
-
-            if (s_board_status.rgb_ready) {
-                (void)board_rgb_set(status.connected ? 0 : 8,
-                                    status.connected ? 8 : 3,
-                                    status.connected ? 2 : 0);
-            }
+            set_rgb(status.connected ? 0 : 8, status.connected ? 8 : 3,
+                    status.connected ? 2 : 0);
             if (!last_connected && status.connected) {
                 ESP_LOGI(TAG, "Wi-Fi connected; local address %s",
                          status.ip_address);
@@ -415,6 +526,11 @@ void app_main(void)
                 start_mdns();
             }
         }
+        if (status.connected &&
+            interval_elapsed(last_rssi_refresh, RSSI_REFRESH_INTERVAL_MS)) {
+            last_rssi_refresh = xTaskGetTickCount();
+            (void)connectivity_refresh_rssi();
+        }
 
         airtrack_snapshot_t aircraft;
         ESP_ERROR_CHECK(adsb_client_get_snapshot(&aircraft));
@@ -422,23 +538,25 @@ void app_main(void)
         if (snapshot_changed) {
             last_snapshot_sequence = aircraft.sequence;
             const esp_err_t log_result = storage_logger_submit(&aircraft);
-            if (log_result != ESP_OK && log_result != ESP_ERR_NO_MEM) {
+            if (log_result != ESP_OK && log_result != ESP_ERR_NO_MEM &&
+                log_result != ESP_ERR_INVALID_STATE) {
                 ESP_LOGW(TAG, "Could not queue SD log record: %s",
                          esp_err_to_name(log_result));
             }
         }
 
-        if ((status.connected || tracking_screen_started) &&
+        if ((status.connected || s_tracking_started) &&
             (snapshot_changed || interval_elapsed(last_ui_update,
                                                   UI_TRACKING_INTERVAL_MS))) {
             last_ui_update = xTaskGetTickCount();
             const ui_tracking_state_t tracking_state = {
                 .settings = &s_settings,
                 .snapshot = &aircraft,
-                .ssid = status.ssid[0] != '\0' ? status.ssid : config.wifi_ssid,
+                .ssid = status.ssid[0] != '\0' ? status.ssid : s_config.wifi_ssid,
                 .ip_address = status.connected ? status.ip_address : "--",
                 .rssi_available = status.rssi_available,
                 .rssi_dbm = status.rssi_dbm,
+                .wifi_connected = status.connected,
             };
             const esp_err_t ui_result =
                 ui_diagnostic_show_tracking(&tracking_state);
@@ -446,7 +564,7 @@ void app_main(void)
                 ESP_LOGW(TAG, "Could not update tracking display: %s",
                          esp_err_to_name(ui_result));
             } else {
-                tracking_screen_started = true;
+                s_tracking_started = true;
             }
         }
 
@@ -485,31 +603,87 @@ void app_main(void)
             }
         }
 
-
-        if (board_boot_button_is_pressed()) {
-            if (!boot_hold_active) {
-                boot_hold_active = true;
-                boot_pressed_since = xTaskGetTickCount();
-            } else if (interval_elapsed(boot_pressed_since,
-                                       BOOT_SETUP_HOLD_MS)) {
-                ESP_LOGI(TAG, "BOOT hold requested secure setup mode");
-                (void)adsb_client_set_online(false);
-                (void)storage_logger_stop();
-                ESP_ERROR_CHECK(enter_setup_mode(&config));
-                return;
-            }
-        } else {
-            boot_hold_active = false;
+        if (boot_hold_triggered(&boot_hold)) {
+            ESP_LOGI(TAG, "BOOT hold requested secure setup mode");
+            return SETUP_REASON_BUTTON;
         }
 
         if (!status.connected &&
             interval_elapsed(disconnected_since, WIFI_RECOVERY_DELAY_MS)) {
-            ESP_LOGW(TAG, "Station unavailable; enabling recovery setup mode");
-            (void)storage_logger_stop();
-            ESP_ERROR_CHECK(enter_setup_mode(&config));
-            return;
+            ESP_LOGW(TAG, "Station unavailable for %u s; opening recovery setup",
+                     (unsigned)(WIFI_RECOVERY_DELAY_MS / 1000U));
+            return SETUP_REASON_RECOVERY;
         }
+#ifdef AIRTRACK_TEST_FORCE_RECOVERY_MS
+        if (!forced_once &&
+            interval_elapsed(entered, AIRTRACK_TEST_FORCE_RECOVERY_MS)) {
+            forced_once = true;
+            ESP_LOGW(TAG, "TEST HOOK: forcing recovery setup mode");
+            return SETUP_REASON_RECOVERY;
+        }
+#endif
 
-        vTaskDelay(pdMS_TO_TICKS(NETWORK_STATUS_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_INTERVAL_MS));
+    }
+}
+
+void app_main(void)
+{
+    ESP_ERROR_CHECK(airtrack_config_init());
+    ESP_ERROR_CHECK(airtrack_config_load(&s_config));
+    ESP_ERROR_CHECK(airtrack_config_load_settings(&s_settings));
+
+    board_config_t board_config = BOARD_CONFIG_DEFAULT();
+    board_config.startup_brightness_percent = 0;
+
+    ESP_ERROR_CHECK(board_init(&board_config));
+    ESP_ERROR_CHECK(board_get_status(&s_board_status));
+    ESP_ERROR_CHECK(esp_flash_get_size(NULL, &s_flash_bytes));
+
+    ESP_LOGI(TAG, "AirTrack hardware bring-up");
+    ESP_LOGI(TAG, "Flash: %lu MiB",
+             (unsigned long)(s_flash_bytes / (1024U * 1024U)));
+    ESP_LOGI(TAG, "LCD: %s", s_board_status.lcd_ready ? "ready" : "failed");
+    ESP_LOGI(TAG, "SD: %s",
+             s_board_status.sd_mounted ? "mounted" : "unavailable");
+
+    ESP_ERROR_CHECK(ui_diagnostic_init(board_lcd_panel_io(), board_lcd_panel()));
+    const ui_diagnostic_state_t diagnostic = make_diagnostic(
+        s_board_status.sd_mounted ? "Starting network" : "SD optional - network",
+        s_config.wifi_configured ? s_config.wifi_ssid : NULL, NULL);
+    ESP_ERROR_CHECK(ui_diagnostic_update(&diagnostic));
+
+    /* Let the first bounded LVGL strips reach the panel before illuminating it. */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_ERROR_CHECK(board_backlight_set(s_settings.brightness_percent));
+    set_rgb(8, 3, 0);
+
+    ESP_ERROR_CHECK(connectivity_init());
+    ESP_ERROR_CHECK(adsb_client_start(&s_settings));
+
+    if (!s_config.wifi_configured) {
+        ESP_ERROR_CHECK(enter_setup_mode(SETUP_REASON_UNCONFIGURED));
+        run_setup_mode(SETUP_REASON_UNCONFIGURED);
+        return; /* unreachable: run_setup_mode restarts */
+    }
+
+    start_time_sync();
+    ESP_ERROR_CHECK(storage_logger_start(s_board_status.sd_mounted,
+                                         &s_settings));
+    ESP_ERROR_CHECK(connectivity_start_station(s_config.wifi_ssid,
+                                               s_config.wifi_password));
+
+    for (;;) {
+        const setup_reason_t reason = run_tracking_mode();
+        ESP_ERROR_CHECK(enter_setup_mode(reason));
+        run_setup_mode(reason);
+        /* Only recovery returns here, with the station connected again. */
+        const esp_err_t err = leave_setup_mode();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Setup teardown reported %s; restarting for a clean state",
+                     esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
     }
 }

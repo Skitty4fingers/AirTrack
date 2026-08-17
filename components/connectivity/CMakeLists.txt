@@ -5,6 +5,7 @@ idf_component_register(
         esp_event
         esp_netif
         esp_wifi
+        esp_timer
         freertos
     PRIV_REQUIRES
         log

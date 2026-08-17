@@ -1,4 +1,4 @@
-# AirTrack 1.0.0 release checklist
+# AirTrack 1.1.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,10 +10,12 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,529,536 bytes.
-- [x] Both 3,904 KiB OTA app partitions retain 62 percent free.
+- [x] Image is below the 3.5 MiB gate: 1,717,408 bytes (1.1.0 adds ~190 KiB
+  of Montserrat fonts; both 3,904 KiB OTA slots retain 57 percent free).
 - [x] Artifact SHA-256:
-  `9bb12521776ccb51cc0012a53f41f55de0c8ee1791456b499e0ec7e4e17ab71c`.
+  `3710cc5c52dede69a28bd615ad948a4b87acb4ab7f84cdb7f2c4ed8dee36260c`.
+- [x] Host LCD render (`tools/host_ui_render/render.sh`) reviewed for the
+  live, stale, emergency, empty, no-Wi-Fi, and both setup screens.
 - [x] Connected hardware identified as ESP32-C6FH8 revision 0.2 with 8 MB
   flash before installation.
 - [x] Existing NVS was backed up before the first 1.0.0 installation; the
@@ -25,6 +27,12 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] Supervisor stack retained 4,516 bytes after dashboard startup.
 - [x] Repeated LAN requests held free heap near 133.8 KiB with a 125.6 KiB
   recorded minimum during the unconfigured-location smoke test.
+- [x] 1.1.0 on-target: configured location polls adsb.fi over one reused TLS
+  session (`tls_connections` stays at 1 across hundreds of polls), the
+  published feed state no longer flickers through STALE between polls, idle
+  free heap ~118 KiB with a ~94 KiB minimum, and the forced recovery hook
+  (`AIRTRACK_TEST_FORCE_RECOVERY_MS`) completed a full tracking -> AP+STA
+  recovery -> tracking round trip in about 14 seconds.
 
 ## Required before final field sign-off
 
@@ -41,13 +49,16 @@ the physical device, its real fixed location, or elapsed soak time.
   selection, rejected password, and successful recovery from a phone.
 - [ ] Disconnect Internet while retaining Wi-Fi and verify stale/offline state
   without exposing the setup portal on the station LAN.
+- [ ] Power the router off for more than 60 seconds and confirm the recovery
+  setup screen appears, then that tracking resumes by itself once the router
+  is back (no power cycle).
 - [ ] Run a 24-hour burn-in followed by the planned 72-hour soak with stable
   heap, adequate task stack watermarks, no watchdogs, and no reconnect trend.
 
 ## Deliberately deferred from 1.0.0
 
 - Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.0.0 updates use native USB.
+  but 1.1.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.

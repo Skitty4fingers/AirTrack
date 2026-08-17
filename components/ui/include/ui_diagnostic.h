@@ -44,13 +44,15 @@ esp_err_t ui_diagnostic_update(const ui_diagnostic_state_t *state);
  * Replace the diagnostic view with the offline Wi-Fi setup screen.
  *
  * The screen contains a standards-compatible WPA Wi-Fi QR code, the readable
- * access-point credentials, and the setup web address.  The SSID must contain
+ * access-point credentials, and the setup web address.  When recovery is
+ * true the header explains that the saved network was lost and is retried.  The SSID must contain
  * 1..32 printable bytes, the WPA password 8..63 printable bytes, and
  * ip_address must be a valid IPv4 address (normally "192.168.4.1").
  */
 esp_err_t ui_diagnostic_show_setup(const char *ap_ssid,
                                    const char *ap_password,
-                                   const char *ip_address);
+                                   const char *ip_address,
+                                   bool recovery);
 
 typedef struct {
     const airtrack_settings_t *settings;
@@ -59,6 +61,7 @@ typedef struct {
     const char *ip_address;
     bool rssi_available;
     int8_t rssi_dbm;
+    bool wifi_connected;
 } ui_tracking_state_t;
 
 /** Show or update the production nearest-aircraft screen. */

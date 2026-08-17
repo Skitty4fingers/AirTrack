@@ -39,3 +39,13 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # Setup clients must send DNS queries to AirTrack so wildcard captive DNS can
 # direct platform connectivity probes to the local portal.
 CONFIG_LWIP_DHCPS_ADD_DNS=y
+
+# LVGL fonts used by the tracking screen: 10/12 captions and footer, 16 data
+# rows, 20 headlines, 28 callsign, 40 distance.  Montserrat 14 stays as the
+# default for the setup and diagnostic screens.
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_40=y

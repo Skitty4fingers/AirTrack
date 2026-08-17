@@ -4,3 +4,4 @@
 /sdkconfig
 /sdkconfig.old
 /.cache/
+/build-host-ui/

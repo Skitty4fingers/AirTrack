@@ -1,5 +1,6 @@
 #include "ui_diagnostic.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +22,18 @@
 #define UI_WIFI_PASSWORD_MIN_BYTES 8U
 #define UI_WIFI_PASSWORD_MAX_BYTES 63U
 #define UI_WIFI_QR_PAYLOAD_BYTES 224U
+#define UI_ARROW_BOX 44
+#define UI_STALE_AGE_S 30.0
+
+#define UI_COLOR_BG 0x07111F
+#define UI_COLOR_PANEL 0x0D1A2B
+#define UI_COLOR_TEXT 0xF2F6FC
+#define UI_COLOR_DIM 0xA7B5CA
+#define UI_COLOR_MUTED 0x6F819B
+#define UI_COLOR_CYAN 0x55D9F3
+#define UI_COLOR_GREEN 0x8BE36D
+#define UI_COLOR_AMBER 0xFFB454
+#define UI_COLOR_RED 0xFF647C
 
 #if CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES <= UI_FLUSH_NOTIFY_INDEX
 #error "The UI flush notification requires FreeRTOS task notification index 1"
@@ -45,14 +58,32 @@ typedef struct {
     lv_obj_t *flash_value;
     lv_obj_t *ssid;
     lv_obj_t *ip;
-    lv_obj_t *tracking_mode;
-    lv_obj_t *tracking_identity;
-    lv_obj_t *tracking_meta;
-    lv_obj_t *tracking_distance;
-    lv_obj_t *tracking_bearing;
-    lv_obj_t *tracking_altitude;
-    lv_obj_t *tracking_speed;
-    lv_obj_t *tracking_age;
+    /* Tracking screen widgets. */
+    lv_obj_t *trk_pill;
+    lv_obj_t *trk_pill_text;
+    lv_obj_t *trk_data;          /* container shown while a target exists */
+    lv_obj_t *trk_identity;
+    lv_obj_t *trk_meta;
+    lv_obj_t *trk_distance;
+    lv_obj_t *trk_unit;
+    lv_obj_t *trk_ring;
+    lv_obj_t *trk_arrow;
+    lv_obj_t *trk_bearing;
+    lv_obj_t *trk_bearing_sub;
+    lv_obj_t *trk_alt;
+    lv_obj_t *trk_vs;
+    lv_obj_t *trk_gs;
+    lv_obj_t *trk_sqk;
+    lv_obj_t *trk_empty;         /* container shown without a target */
+    lv_obj_t *trk_empty_head;
+    lv_obj_t *trk_empty_sub;
+    lv_obj_t *trk_empty_hint;
+    lv_obj_t *trk_age;
+    lv_obj_t *trk_wifi_icon;
+    lv_obj_t *trk_ssid;
+    lv_obj_t *trk_rssi;
+    lv_obj_t *trk_ip;
+    lv_point_precise_t arrow_points[5];
     lv_draw_buf_t *qr_draw_buffer;
 } ui_context_t;
 
@@ -330,6 +361,7 @@ static void create_status_row(lv_obj_t *screen, const char *name, int32_t y,
 static esp_err_t create_setup_screen(const char *ap_ssid,
                                      const char *ap_password,
                                      const char *ip_address,
+                                     bool recovery,
                                      lv_obj_t **screen_out,
                                      lv_obj_t **canvas_out,
                                      lv_draw_buf_t **draw_buffer_out)
@@ -356,8 +388,11 @@ static esp_err_t create_setup_screen(const char *ap_ssid,
     lv_obj_set_pos(header, 0, 0);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x0D1A2B), 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
-    lv_obj_t *mode = create_label(header, "SETUP MODE", 10, 8, 152,
-                                  lv_color_hex(0xFFB454));
+    lv_obj_t *mode = create_label(header,
+                                  recovery ? "RECOVERY SETUP" : "SETUP MODE",
+                                  10, 8, 152,
+                                  lv_color_hex(recovery ? UI_COLOR_RED
+                                                        : UI_COLOR_AMBER));
     lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_CENTER, 0);
 
     lv_obj_t *canvas = lv_canvas_create(screen);
@@ -366,9 +401,14 @@ static esp_err_t create_setup_screen(const char *ap_ssid,
     lv_obj_set_pos(canvas, 16, 34);
 
     lv_obj_t *instruction = create_label(
-        screen, "Scan QR to join Wi-Fi", 12, 178, 148,
-        lv_color_hex(0xDDE7F4));
+        screen,
+        recovery ? "Retrying Wi-Fi or scan QR"
+                 : "Scan QR to join Wi-Fi",
+        6, 178, 160, lv_color_hex(0xDDE7F4));
     lv_obj_set_style_text_align(instruction, LV_TEXT_ALIGN_CENTER, 0);
+    if (recovery) {
+        lv_obj_set_style_text_font(instruction, &lv_font_montserrat_12, 0);
+    }
 
     char label_text[96];
     (void)snprintf(label_text, sizeof(label_text), "SSID: %s", ap_ssid);
@@ -606,7 +646,8 @@ esp_err_t ui_diagnostic_update(const ui_diagnostic_state_t *state)
 
 esp_err_t ui_diagnostic_show_setup(const char *ap_ssid,
                                    const char *ap_password,
-                                   const char *ip_address)
+                                   const char *ip_address,
+                                   bool recovery)
 {
     if (!s_ui.initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -646,7 +687,7 @@ esp_err_t ui_diagnostic_show_setup(const char *ap_ssid,
     lv_obj_t *qr_canvas = NULL;
     lv_draw_buf_t *new_qr_draw_buffer = NULL;
     esp_err_t err = create_setup_screen(ap_ssid, ap_password, ip_address,
-                                        &new_screen, &qr_canvas,
+                                        recovery, &new_screen, &qr_canvas,
                                         &new_qr_draw_buffer);
     if (err == ESP_OK) {
         qr_render_context_t render_context = {
@@ -695,6 +736,7 @@ esp_err_t ui_diagnostic_show_setup(const char *ap_ssid,
     s_ui.ssid = NULL;
     s_ui.ip = NULL;
     s_ui.diagnostic_visible = false;
+    s_ui.tracking_visible = false;
     if (old_screen != NULL) {
         lv_obj_delete(old_screen);
     }
@@ -712,17 +754,17 @@ static lv_color_t tracking_state_color(airtrack_feed_state_t state)
 {
     switch (state) {
     case AIRTRACK_FEED_LIVE:
-        return lv_color_hex(0x8BE36D);
+        return lv_color_hex(UI_COLOR_GREEN);
     case AIRTRACK_FEED_EMPTY:
     case AIRTRACK_FEED_SEARCHING:
     case AIRTRACK_FEED_TIME_SYNC:
-        return lv_color_hex(0x55D9F3);
+        return lv_color_hex(UI_COLOR_CYAN);
     case AIRTRACK_FEED_STALE:
-        return lv_color_hex(0xFFB454);
-    case AIRTRACK_FEED_OFFLINE:
     case AIRTRACK_FEED_CONFIG_REQUIRED:
+        return lv_color_hex(UI_COLOR_AMBER);
+    case AIRTRACK_FEED_OFFLINE:
     default:
-        return lv_color_hex(0xFF647C);
+        return lv_color_hex(UI_COLOR_RED);
     }
 }
 
@@ -754,64 +796,219 @@ static const char *target_identity(const airtrack_aircraft_t *aircraft)
                                                 : aircraft->hex;
 }
 
+static const char *cardinal_name(float bearing_deg)
+{
+    static const char *names[] = {
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+        "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    };
+    float normalized = bearing_deg;
+    while (normalized < 0.0f) {
+        normalized += 360.0f;
+    }
+    while (normalized >= 360.0f) {
+        normalized -= 360.0f;
+    }
+    const unsigned index = (unsigned)((normalized + 11.25f) / 22.5f) % 16U;
+    return names[index];
+}
+
+/* Format a nonnegative integer with thousands separators, e.g. "18,325". */
+static void format_grouped(char *out, size_t capacity, long value)
+{
+    char digits[16];
+    const int length = snprintf(digits, sizeof(digits), "%ld",
+                                value < 0 ? -value : value);
+    if (length < 0 || (size_t)length >= sizeof(digits) || capacity < 2U) {
+        if (capacity > 0U) {
+            out[0] = '\0';
+        }
+        return;
+    }
+    size_t used = 0U;
+    if (value < 0 && used + 1U < capacity) {
+        out[used++] = '-';
+    }
+    for (int index = 0; index < length && used + 1U < capacity; ++index) {
+        out[used++] = digits[index];
+        const int remaining = length - index - 1;
+        if (remaining > 0 && remaining % 3 == 0 && used + 1U < capacity) {
+            out[used++] = ',';
+        }
+    }
+    out[used] = '\0';
+}
+
+static lv_obj_t *create_font_label(lv_obj_t *parent, const char *text,
+                                   int32_t x, int32_t y, int32_t width,
+                                   const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *label = create_label(parent, text, x, y, width,
+                                   lv_color_hex(color));
+    lv_obj_set_style_text_font(label, font, 0);
+    return label;
+}
+
+static lv_obj_t *create_panel(lv_obj_t *parent, int32_t x, int32_t y,
+                              int32_t width, int32_t height, uint32_t color)
+{
+    lv_obj_t *panel = lv_obj_create(parent);
+    lv_obj_remove_style_all(panel);
+    lv_obj_set_size(panel, width, height);
+    lv_obj_set_pos(panel, x, y);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    return panel;
+}
+
+static lv_obj_t *create_group(lv_obj_t *parent, int32_t x, int32_t y,
+                              int32_t width, int32_t height)
+{
+    lv_obj_t *group = lv_obj_create(parent);
+    lv_obj_remove_style_all(group);
+    lv_obj_remove_flag(group, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(group, width, height);
+    lv_obj_set_pos(group, x, y);
+    return group;
+}
+
+static void set_arrow_bearing(float bearing_deg)
+{
+    const float radians = bearing_deg * (3.14159265f / 180.0f);
+    const float cx = UI_ARROW_BOX / 2.0f;
+    const float cy = UI_ARROW_BOX / 2.0f;
+    const float tip = 17.0f;
+    const float wing = 11.0f;
+    const float notch = 5.0f;
+    const float wing_angle = 150.0f * (3.14159265f / 180.0f);
+    lv_point_precise_t *points = s_ui.arrow_points;
+    points[0].x = cx + tip * sinf(radians);
+    points[0].y = cy - tip * cosf(radians);
+    points[1].x = cx + wing * sinf(radians + wing_angle);
+    points[1].y = cy - wing * cosf(radians + wing_angle);
+    points[2].x = cx - notch * sinf(radians);
+    points[2].y = cy + notch * cosf(radians);
+    points[3].x = cx + wing * sinf(radians - wing_angle);
+    points[3].y = cy - wing * cosf(radians - wing_angle);
+    points[4] = points[0];
+    lv_line_set_points(s_ui.trk_arrow, s_ui.arrow_points, 5);
+    lv_obj_invalidate(s_ui.trk_ring);
+}
+
 static void create_tracking_screen_locked(void)
 {
-    lv_obj_t *new_screen = lv_obj_create(NULL);
-    lv_obj_remove_style_all(new_screen);
-    lv_obj_set_style_bg_color(new_screen, lv_color_hex(0x07111F), 0);
-    lv_obj_set_style_bg_opa(new_screen, LV_OPA_COVER, 0);
+    lv_obj_t *screen = lv_obj_create(NULL);
+    lv_obj_remove_style_all(screen);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
-    lv_obj_t *header = lv_obj_create(new_screen);
-    lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, BOARD_LCD_H_RES, 30);
-    lv_obj_set_style_bg_color(header, lv_color_hex(0x0D1A2B), 0);
-    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
-    create_label(header, "AIRTRACK", 10, 8, 98, lv_color_hex(0x55D9F3));
-    s_ui.tracking_mode = create_label(header, "SCAN", 110, 8, 52,
-                                      lv_color_hex(0x55D9F3));
-    lv_obj_set_style_text_align(s_ui.tracking_mode, LV_TEXT_ALIGN_RIGHT, 0);
+    /* Header: wordmark and state pill. */
+    lv_obj_t *header = create_panel(screen, 0, 0, BOARD_LCD_H_RES, 26,
+                                    UI_COLOR_PANEL);
+    create_font_label(header, "AIRTRACK", 8, 7, 90, &lv_font_montserrat_12,
+                      UI_COLOR_CYAN);
+    s_ui.trk_pill = create_panel(header, 108, 5, 56, 16, UI_COLOR_CYAN);
+    lv_obj_set_style_radius(s_ui.trk_pill, 8, 0);
+    s_ui.trk_pill_text = create_font_label(s_ui.trk_pill, "SCAN", 0, 2, 56,
+                                           &lv_font_montserrat_10,
+                                           UI_COLOR_BG);
+    lv_obj_set_style_text_align(s_ui.trk_pill_text, LV_TEXT_ALIGN_CENTER, 0);
 
-    lv_obj_t *card = lv_obj_create(new_screen);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, 152, 196);
-    lv_obj_set_pos(card, 10, 36);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x101F31), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 8, 0);
-    s_ui.tracking_identity = create_label(card, "SEARCHING", 10, 10, 132,
-                                          lv_color_hex(0xF2F6FC));
-    s_ui.tracking_meta = create_label(card, "Waiting for adsb.fi", 10, 33, 132,
-                                      lv_color_hex(0xA7B5CA));
-    s_ui.tracking_distance = create_label(card, "--.- NM", 10, 62, 132,
-                                          lv_color_hex(0x55D9F3));
-    s_ui.tracking_bearing = create_label(card, "BRG --- TRUE", 10, 88, 132,
-                                         lv_color_hex(0xDDE7F4));
-    s_ui.tracking_altitude = create_label(card, "ALT --", 10, 116, 132,
-                                          lv_color_hex(0xDDE7F4));
-    s_ui.tracking_speed = create_label(card, "SPD --", 10, 140, 132,
-                                       lv_color_hex(0xDDE7F4));
-    s_ui.tracking_age = create_label(card, "Waiting for a valid response", 10,
-                                     169, 132, lv_color_hex(0x7F8FA8));
+    /* Target block. */
+    s_ui.trk_data = create_group(screen, 0, 26, BOARD_LCD_H_RES, 224);
+    s_ui.trk_identity = create_font_label(s_ui.trk_data, "--", 8, 4, 156,
+                                          &lv_font_montserrat_28,
+                                          UI_COLOR_TEXT);
+    s_ui.trk_meta = create_font_label(s_ui.trk_data, "", 8, 38, 156,
+                                      &lv_font_montserrat_12, UI_COLOR_DIM);
+    s_ui.trk_distance = create_font_label(s_ui.trk_data, "--", 6, 54, 116,
+                                          &lv_font_montserrat_40,
+                                          UI_COLOR_CYAN);
+    s_ui.trk_unit = create_font_label(s_ui.trk_data, "NM", 122, 76, 44,
+                                      &lv_font_montserrat_16, UI_COLOR_DIM);
 
-    lv_obj_t *footer = lv_obj_create(new_screen);
-    lv_obj_remove_style_all(footer);
-    lv_obj_set_size(footer, BOARD_LCD_H_RES, 82);
-    lv_obj_set_pos(footer, 0, 238);
-    lv_obj_set_style_bg_color(footer, lv_color_hex(0x0D1A2B), 0);
-    lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
-    s_ui.ssid = create_label(footer, "SSID: --", 10, 8, 152,
-                             lv_color_hex(0xDDE7F4));
-    s_ui.ip = create_label(footer, "IP: --", 10, 29, 152,
-                           lv_color_hex(0xDDE7F4));
-    create_label(footer, "Data: adsb.fi", 10, 52, 152,
-                 lv_color_hex(0x55D9F3));
-    create_label(footer, "Not for navigation", 10, 68, 152,
-                 lv_color_hex(0x6F819B));
+    s_ui.trk_ring = create_group(s_ui.trk_data, 8, 106, UI_ARROW_BOX,
+                                 UI_ARROW_BOX);
+    lv_obj_set_style_radius(s_ui.trk_ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_ui.trk_ring, 1, 0);
+    lv_obj_set_style_border_color(s_ui.trk_ring, lv_color_hex(0x2A3B55), 0);
+    lv_obj_set_style_border_opa(s_ui.trk_ring, LV_OPA_COVER, 0);
+    s_ui.trk_arrow = lv_line_create(s_ui.trk_ring);
+    lv_obj_remove_style_all(s_ui.trk_arrow);
+    lv_obj_set_pos(s_ui.trk_arrow, 0, 0);
+    lv_obj_set_size(s_ui.trk_arrow, UI_ARROW_BOX, UI_ARROW_BOX);
+    lv_obj_set_style_line_width(s_ui.trk_arrow, 3, 0);
+    lv_obj_set_style_line_rounded(s_ui.trk_arrow, true, 0);
+    lv_obj_set_style_line_color(s_ui.trk_arrow, lv_color_hex(UI_COLOR_GREEN), 0);
+    set_arrow_bearing(0.0f);
+
+    s_ui.trk_bearing = create_font_label(s_ui.trk_data, "---° --", 60, 108,
+                                         104, &lv_font_montserrat_16,
+                                         UI_COLOR_TEXT);
+    s_ui.trk_bearing_sub = create_font_label(s_ui.trk_data, "bearing", 60, 130,
+                                             104, &lv_font_montserrat_12,
+                                             UI_COLOR_MUTED);
+
+    create_font_label(s_ui.trk_data, "ALT", 8, 158, 76, &lv_font_montserrat_10,
+                      UI_COLOR_MUTED);
+    create_font_label(s_ui.trk_data, "V/S", 92, 158, 72, &lv_font_montserrat_10,
+                      UI_COLOR_MUTED);
+    s_ui.trk_alt = create_font_label(s_ui.trk_data, "--", 8, 170, 80,
+                                     &lv_font_montserrat_16, UI_COLOR_TEXT);
+    s_ui.trk_vs = create_font_label(s_ui.trk_data, "--", 92, 170, 74,
+                                    &lv_font_montserrat_16, UI_COLOR_TEXT);
+    create_font_label(s_ui.trk_data, "GS", 8, 192, 76, &lv_font_montserrat_10,
+                      UI_COLOR_MUTED);
+    create_font_label(s_ui.trk_data, "SQUAWK", 92, 192, 72,
+                      &lv_font_montserrat_10, UI_COLOR_MUTED);
+    s_ui.trk_gs = create_font_label(s_ui.trk_data, "--", 8, 204, 80,
+                                    &lv_font_montserrat_16, UI_COLOR_TEXT);
+    s_ui.trk_sqk = create_font_label(s_ui.trk_data, "--", 92, 204, 74,
+                                     &lv_font_montserrat_16, UI_COLOR_TEXT);
+
+    /* Empty / waiting block. */
+    s_ui.trk_empty = create_group(screen, 0, 26, BOARD_LCD_H_RES, 224);
+    s_ui.trk_empty_head = create_font_label(s_ui.trk_empty, "SEARCHING", 6,
+                                            76, 160, &lv_font_montserrat_20,
+                                            UI_COLOR_TEXT);
+    lv_obj_set_style_text_align(s_ui.trk_empty_head, LV_TEXT_ALIGN_CENTER, 0);
+    s_ui.trk_empty_sub = create_font_label(s_ui.trk_empty, "", 8, 104, 156,
+                                           &lv_font_montserrat_12,
+                                           UI_COLOR_DIM);
+    lv_obj_set_style_text_align(s_ui.trk_empty_sub, LV_TEXT_ALIGN_CENTER, 0);
+    s_ui.trk_empty_hint = create_font_label(s_ui.trk_empty, "", 8, 122, 156,
+                                            &lv_font_montserrat_12,
+                                            UI_COLOR_MUTED);
+    lv_obj_set_style_text_align(s_ui.trk_empty_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_flag(s_ui.trk_empty, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.trk_age = create_font_label(screen, "", 8, 250, 156,
+                                     &lv_font_montserrat_12, UI_COLOR_MUTED);
+
+    /* Footer: network and attribution. */
+    lv_obj_t *footer = create_panel(screen, 0, 266, BOARD_LCD_H_RES, 54,
+                                    UI_COLOR_PANEL);
+    s_ui.trk_wifi_icon = create_font_label(footer, LV_SYMBOL_WIFI, 8, 5, 16,
+                                           &lv_font_montserrat_12,
+                                           UI_COLOR_GREEN);
+    s_ui.trk_ssid = create_font_label(footer, "--", 26, 5, 84,
+                                      &lv_font_montserrat_12, UI_COLOR_TEXT);
+    s_ui.trk_rssi = create_font_label(footer, "", 110, 6, 54,
+                                      &lv_font_montserrat_10, UI_COLOR_DIM);
+    lv_obj_set_style_text_align(s_ui.trk_rssi, LV_TEXT_ALIGN_RIGHT, 0);
+    s_ui.trk_ip = create_font_label(footer, "IP --", 8, 21, 156,
+                                    &lv_font_montserrat_12, UI_COLOR_TEXT);
+    create_font_label(footer, "Data: adsb.fi", 8, 38, 70,
+                      &lv_font_montserrat_10, UI_COLOR_CYAN);
+    lv_obj_t *notice = create_font_label(footer, "not for navigation", 62, 38,
+                                         102, &lv_font_montserrat_10,
+                                         UI_COLOR_MUTED);
+    lv_obj_set_style_text_align(notice, LV_TEXT_ALIGN_RIGHT, 0);
 
     lv_obj_t *old_screen = s_ui.screen;
     lv_draw_buf_t *old_qr = s_ui.qr_draw_buffer;
-    lv_screen_load(new_screen);
-    s_ui.screen = new_screen;
+    lv_screen_load(screen);
+    s_ui.screen = screen;
     s_ui.qr_draw_buffer = NULL;
     if (old_screen != NULL) {
         lv_obj_delete(old_screen);
@@ -823,8 +1020,28 @@ static void create_tracking_screen_locked(void)
     s_ui.lcd_value = NULL;
     s_ui.sd_value = NULL;
     s_ui.flash_value = NULL;
+    s_ui.ssid = NULL;
+    s_ui.ip = NULL;
     s_ui.diagnostic_visible = false;
     s_ui.tracking_visible = true;
+}
+
+static void set_label_if_changed(lv_obj_t *label, const char *text)
+{
+    const char *current = lv_label_get_text(label);
+    if (current == NULL || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
+
+static void show_group(lv_obj_t *group, bool visible)
+{
+    const bool hidden = lv_obj_has_flag(group, LV_OBJ_FLAG_HIDDEN);
+    if (visible && hidden) {
+        lv_obj_remove_flag(group, LV_OBJ_FLAG_HIDDEN);
+    } else if (!visible && !hidden) {
+        lv_obj_add_flag(group, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
@@ -844,19 +1061,71 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
     }
 
     const airtrack_snapshot_t *snapshot = state->snapshot;
-    lv_label_set_text(s_ui.tracking_mode, tracking_mode_text(snapshot->state));
-    lv_obj_set_style_text_color(s_ui.tracking_mode,
-                                tracking_state_color(snapshot->state), 0);
-    char text[128];
+    char text[96];
+
+    /* Header pill. */
+    set_label_if_changed(s_ui.trk_pill_text, tracking_mode_text(snapshot->state));
+    lv_obj_set_style_bg_color(s_ui.trk_pill,
+                              tracking_state_color(snapshot->state), 0);
+
+    /* Effective position age: seconds since the report plus time since the
+     * last successful poll (never a failure or waiting publish). */
+    double age = 0.0;
+    if (snapshot->aircraft_count > 0U) {
+        age = snapshot->aircraft[0].seen_pos_s;
+        if (snapshot->last_success_monotonic_ms > 0) {
+            const int64_t elapsed = (esp_timer_get_time() / 1000LL) -
+                                    snapshot->last_success_monotonic_ms;
+            if (elapsed > 0) {
+                age += (double)elapsed / 1000.0;
+            }
+        }
+    }
+
     if (snapshot->aircraft_count > 0U) {
         const airtrack_aircraft_t *aircraft = &snapshot->aircraft[0];
-        lv_label_set_text(s_ui.tracking_identity, target_identity(aircraft));
-        (void)snprintf(text, sizeof(text), "%s%s%s",
-                       aircraft->registration,
-                       aircraft->registration[0] != '\0' &&
-                               aircraft->aircraft_type[0] != '\0' ? " · " : "",
-                       aircraft->aircraft_type);
-        lv_label_set_text(s_ui.tracking_meta, text[0] != '\0' ? text : aircraft->hex);
+        show_group(s_ui.trk_empty, false);
+        show_group(s_ui.trk_data, true);
+        const bool dimmed = snapshot->state != AIRTRACK_FEED_LIVE ||
+                            age > UI_STALE_AGE_S;
+        const uint32_t value_color = dimmed ? UI_COLOR_DIM : UI_COLOR_TEXT;
+        const uint32_t accent = aircraft->emergency ? UI_COLOR_RED
+                                : dimmed ? UI_COLOR_AMBER : UI_COLOR_CYAN;
+
+        set_label_if_changed(s_ui.trk_identity, target_identity(aircraft));
+        lv_obj_set_style_text_color(s_ui.trk_identity,
+                                    lv_color_hex(value_color), 0);
+
+        /* registration · type · category, whichever exist */
+        size_t used = 0U;
+        text[0] = '\0';
+        const char *parts[3] = {
+            aircraft->registration[0] != '\0' &&
+                    strcmp(aircraft->registration,
+                           target_identity(aircraft)) != 0
+                ? aircraft->registration : "",
+            aircraft->aircraft_type,
+            aircraft->description[0] != '\0' ? "" : aircraft->hex,
+        };
+        for (size_t index = 0U; index < 3U; ++index) {
+            if (parts[index][0] == '\0') {
+                continue;
+            }
+            const int written = snprintf(text + used, sizeof(text) - used,
+                                         "%s%s", used > 0U ? " " LV_SYMBOL_BULLET " " : "",
+                                         parts[index]);
+            if (written < 0 || (size_t)written >= sizeof(text) - used) {
+                break;
+            }
+            used += (size_t)written;
+        }
+        if (aircraft->emergency) {
+            (void)snprintf(text, sizeof(text), "EMERGENCY %s",
+                           aircraft->squawk[0] != '\0' ? aircraft->squawk : "");
+        }
+        set_label_if_changed(s_ui.trk_meta, text[0] != '\0' ? text : aircraft->hex);
+        lv_obj_set_style_text_color(s_ui.trk_meta,
+            lv_color_hex(aircraft->emergency ? UI_COLOR_RED : UI_COLOR_DIM), 0);
 
         float distance = aircraft->distance_nm;
         const char *unit = "NM";
@@ -867,75 +1136,149 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
             distance *= 1.150779f;
             unit = "mi";
         }
-        (void)snprintf(text, sizeof(text), "%.1f %s", (double)distance, unit);
-        lv_label_set_text(s_ui.tracking_distance, text);
-        (void)snprintf(text, sizeof(text), "BRG %03.0f° TRUE",
-                       (double)aircraft->bearing_deg);
-        lv_label_set_text(s_ui.tracking_bearing, text);
+        (void)snprintf(text, sizeof(text), distance < 100.0f ? "%.1f" : "%.0f",
+                       (double)distance);
+        set_label_if_changed(s_ui.trk_distance, text);
+        lv_obj_set_style_text_color(s_ui.trk_distance, lv_color_hex(accent), 0);
+        set_label_if_changed(s_ui.trk_unit, unit);
+
+        set_arrow_bearing(aircraft->bearing_deg);
+        lv_obj_set_style_line_color(s_ui.trk_arrow, lv_color_hex(accent), 0);
+        (void)snprintf(text, sizeof(text), "%03.0f° %s",
+                       (double)aircraft->bearing_deg,
+                       cardinal_name(aircraft->bearing_deg));
+        set_label_if_changed(s_ui.trk_bearing, text);
+        lv_obj_set_style_text_color(s_ui.trk_bearing,
+                                    lv_color_hex(value_color), 0);
+        if (aircraft->track_valid) {
+            (void)snprintf(text, sizeof(text), "bearing " LV_SYMBOL_BULLET " trk %03.0f°",
+                           (double)aircraft->track_deg);
+        } else {
+            (void)snprintf(text, sizeof(text), "bearing from here");
+        }
+        set_label_if_changed(s_ui.trk_bearing_sub, text);
+
         if (aircraft->ground) {
-            memcpy(text, "ALT GROUND", sizeof("ALT GROUND"));
+            (void)snprintf(text, sizeof(text), "GROUND");
         } else if (aircraft->altitude_valid) {
-            if (aircraft->vertical_rate_valid) {
-                (void)snprintf(text, sizeof(text), "ALT %ld ft  VR %+ld",
-                               (long)aircraft->altitude_ft,
-                               (long)aircraft->vertical_rate_fpm);
-            } else {
-                (void)snprintf(text, sizeof(text), "ALT %ld ft",
-                               (long)aircraft->altitude_ft);
-            }
+            char grouped[16];
+            format_grouped(grouped, sizeof(grouped), aircraft->altitude_ft);
+            (void)snprintf(text, sizeof(text), "%s ft", grouped);
         } else {
-            memcpy(text, "ALT --", sizeof("ALT --"));
+            (void)snprintf(text, sizeof(text), "--");
         }
-        lv_label_set_text(s_ui.tracking_altitude, text);
+        set_label_if_changed(s_ui.trk_alt, text);
+        lv_obj_set_style_text_color(s_ui.trk_alt, lv_color_hex(value_color), 0);
+
+        if (aircraft->vertical_rate_valid && !aircraft->ground) {
+            const long rate = aircraft->vertical_rate_fpm;
+            char grouped[16];
+            format_grouped(grouped, sizeof(grouped), rate < 0 ? -rate : rate);
+            (void)snprintf(text, sizeof(text), "%s%s",
+                           rate > 0 ? LV_SYMBOL_UP " "
+                           : rate < 0 ? LV_SYMBOL_DOWN " " : "",
+                           rate == 0 ? "level" : grouped);
+        } else {
+            (void)snprintf(text, sizeof(text), "--");
+        }
+        set_label_if_changed(s_ui.trk_vs, text);
+        lv_obj_set_style_text_color(s_ui.trk_vs, lv_color_hex(value_color), 0);
+
         if (aircraft->ground_speed_valid) {
-            if (aircraft->track_valid) {
-                (void)snprintf(text, sizeof(text), "SPD %.0f kt  TRK %03.0f°",
-                               (double)aircraft->ground_speed_kt,
-                               (double)aircraft->track_deg);
-            } else {
-                (void)snprintf(text, sizeof(text), "SPD %.0f kt",
-                               (double)aircraft->ground_speed_kt);
-            }
+            (void)snprintf(text, sizeof(text), "%.0f kt",
+                           (double)aircraft->ground_speed_kt);
         } else {
-            memcpy(text, "SPD --", sizeof("SPD --"));
+            (void)snprintf(text, sizeof(text), "--");
         }
-        lv_label_set_text(s_ui.tracking_speed, text);
-        double age = aircraft->seen_pos_s;
-        if (snapshot->updated_monotonic_ms > 0) {
-            const int64_t elapsed = (esp_timer_get_time() / 1000LL) -
-                                    snapshot->updated_monotonic_ms;
-            if (elapsed > 0) {
-                age += (double)elapsed / 1000.0;
+        set_label_if_changed(s_ui.trk_gs, text);
+        lv_obj_set_style_text_color(s_ui.trk_gs, lv_color_hex(value_color), 0);
+
+        set_label_if_changed(s_ui.trk_sqk,
+                             aircraft->squawk[0] != '\0' ? aircraft->squawk
+                                                          : "--");
+        lv_obj_set_style_text_color(s_ui.trk_sqk,
+            lv_color_hex(aircraft->emergency ? UI_COLOR_RED : value_color), 0);
+
+        if (age < 60.0) {
+            (void)snprintf(text, sizeof(text), "seen %.0f s ago " LV_SYMBOL_BULLET " %lu nearby",
+                           age, (unsigned long)snapshot->aircraft_accepted);
+        } else {
+            (void)snprintf(text, sizeof(text), "seen %.0f min ago " LV_SYMBOL_BULLET " %s",
+                           age / 60.0,
+                           snapshot->error != AIRTRACK_ERROR_NONE
+                               ? airtrack_feed_error_name(snapshot->error)
+                               : "waiting");
+        }
+        set_label_if_changed(s_ui.trk_age, text);
+        lv_obj_set_style_text_color(s_ui.trk_age,
+            lv_color_hex(dimmed ? UI_COLOR_AMBER : UI_COLOR_MUTED), 0);
+    } else {
+        show_group(s_ui.trk_data, false);
+        show_group(s_ui.trk_empty, true);
+        const char *headline;
+        const char *hint;
+        switch (snapshot->state) {
+        case AIRTRACK_FEED_EMPTY:
+            headline = "NO AIRCRAFT";
+            hint = "sky is clear right now";
+            break;
+        case AIRTRACK_FEED_TIME_SYNC:
+            headline = "SYNCING TIME";
+            hint = "waiting for network time";
+            break;
+        case AIRTRACK_FEED_CONFIG_REQUIRED:
+            headline = "SET LOCATION";
+            hint = "open the IP below in a browser";
+            break;
+        case AIRTRACK_FEED_OFFLINE:
+            headline = state->wifi_connected ? "FEED OFFLINE" : "NO WI-FI";
+            hint = state->wifi_connected
+                       ? airtrack_feed_error_name(snapshot->error)
+                       : "reconnecting to Wi-Fi";
+            break;
+        default:
+            headline = "SEARCHING";
+            hint = "requesting nearby traffic";
+            break;
+        }
+        set_label_if_changed(s_ui.trk_empty_head, headline);
+        lv_obj_set_style_text_color(s_ui.trk_empty_head,
+                                    tracking_state_color(snapshot->state), 0);
+        (void)snprintf(text, sizeof(text), "within %u NM",
+                       (unsigned)state->settings->radius_nm);
+        set_label_if_changed(s_ui.trk_empty_sub, text);
+        set_label_if_changed(s_ui.trk_empty_hint, hint);
+        if (snapshot->state == AIRTRACK_FEED_OFFLINE &&
+            snapshot->retry_after_s > 0U && state->wifi_connected) {
+            (void)snprintf(text, sizeof(text), "%s " LV_SYMBOL_BULLET " retry in %lus",
+                           airtrack_feed_error_name(snapshot->error),
+                           (unsigned long)snapshot->retry_after_s);
+        } else {
+            (void)snprintf(text, sizeof(text), "%lu reports last poll",
+                           (unsigned long)snapshot->aircraft_reported);
+            if (snapshot->last_success_monotonic_ms == 0) {
+                text[0] = '\0';
             }
         }
-        (void)snprintf(text, sizeof(text), "%s · position %.0fs old",
-                       tracking_mode_text(snapshot->state), age);
-        lv_label_set_text(s_ui.tracking_age, text);
-    } else {
-        const char *headline = snapshot->state == AIRTRACK_FEED_EMPTY
-                                   ? "NO AIRCRAFT"
-                               : snapshot->state == AIRTRACK_FEED_TIME_SYNC
-                                   ? "SYNCING TIME"
-                               : snapshot->state == AIRTRACK_FEED_CONFIG_REQUIRED
-                                   ? "SETUP REQUIRED"
-                               : snapshot->state == AIRTRACK_FEED_OFFLINE
-                                   ? "FEED OFFLINE" : "SEARCHING";
-        lv_label_set_text(s_ui.tracking_identity, headline);
-        (void)snprintf(text, sizeof(text), "Within %u NM",
-                       (unsigned)state->settings->radius_nm);
-        lv_label_set_text(s_ui.tracking_meta, text);
-        lv_label_set_text(s_ui.tracking_distance, "--.- NM");
-        lv_label_set_text(s_ui.tracking_bearing, "BRG --- TRUE");
-        lv_label_set_text(s_ui.tracking_altitude, "ALT --");
-        lv_label_set_text(s_ui.tracking_speed, "SPD --");
-        lv_label_set_text(s_ui.tracking_age,
-                          airtrack_feed_error_name(snapshot->error));
+        set_label_if_changed(s_ui.trk_age, text);
+        lv_obj_set_style_text_color(s_ui.trk_age, lv_color_hex(UI_COLOR_MUTED), 0);
     }
 
-    (void)snprintf(text, sizeof(text), "SSID: %s", state->ssid);
-    lv_label_set_text(s_ui.ssid, text);
-    (void)snprintf(text, sizeof(text), "IP: %s", state->ip_address);
-    lv_label_set_text(s_ui.ip, text);
+    /* Footer. */
+    set_label_if_changed(s_ui.trk_ssid, state->ssid);
+    lv_obj_set_style_text_color(s_ui.trk_wifi_icon,
+        lv_color_hex(state->wifi_connected ? UI_COLOR_GREEN : UI_COLOR_RED), 0);
+    if (state->wifi_connected && state->rssi_available) {
+        (void)snprintf(text, sizeof(text), "%d dBm", (int)state->rssi_dbm);
+    } else if (state->wifi_connected) {
+        (void)snprintf(text, sizeof(text), "linked");
+    } else {
+        (void)snprintf(text, sizeof(text), "offline");
+    }
+    set_label_if_changed(s_ui.trk_rssi, text);
+    (void)snprintf(text, sizeof(text), "IP %s", state->ip_address);
+    set_label_if_changed(s_ui.trk_ip, text);
+
     lvgl_port_unlock();
     (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
     return ESP_OK;

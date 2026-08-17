@@ -7,6 +7,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -31,6 +32,11 @@ static bool s_station_requested;
 static bool s_softap_requested;
 static char s_station_ssid[CONNECTIVITY_SSID_MAX_BYTES + 1U];
 static connectivity_status_t s_status;
+static uint32_t s_reconnect_delay_ms = CONNECTIVITY_DEFAULT_RECONNECT_DELAY_MS;
+static esp_timer_handle_t s_reconnect_timer;
+/* Set by the STA_START handler so connectivity_start_station() can tell
+ * whether the driver already initiated the first connect attempt. */
+static volatile bool s_connect_started_by_event;
 
 static void copy_text(char *destination, size_t destination_size,
                       const char *source)
@@ -107,6 +113,42 @@ static void clear_station_link(void)
     taskEXIT_CRITICAL(&s_status_lock);
 }
 
+static void start_station_connect(const char *reason)
+{
+    const esp_err_t result = esp_wifi_connect();
+    if (result != ESP_OK && result != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "Station %s could not be started: %s", reason,
+                 esp_err_to_name(result));
+    }
+}
+
+/* Runs in the esp_timer task, never in an ISR or Wi-Fi callback. */
+static void reconnect_timer_callback(void *argument)
+{
+    (void)argument;
+    if (station_is_requested()) {
+        start_station_connect("reconnect");
+    }
+}
+
+static void schedule_station_reconnect(void)
+{
+    uint32_t delay_ms;
+    taskENTER_CRITICAL(&s_status_lock);
+    delay_ms = s_reconnect_delay_ms;
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (s_reconnect_timer == NULL) {
+        start_station_connect("reconnect");
+        return;
+    }
+    (void)esp_timer_stop(s_reconnect_timer);
+    const esp_err_t result =
+        esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_ms * 1000ULL);
+    if (result != ESP_OK) {
+        start_station_connect("reconnect");
+    }
+}
+
 static void wifi_event_handler(void *argument, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
@@ -119,23 +161,19 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
 
     if (event_id == WIFI_EVENT_STA_START) {
         if (station_is_requested()) {
-            const esp_err_t result = esp_wifi_connect();
-            if (result != ESP_OK && result != ESP_ERR_WIFI_CONN) {
-                ESP_LOGW(TAG, "Station connect could not be started: %s",
-                         esp_err_to_name(result));
-            }
+            s_connect_started_by_event = true;
+            start_station_connect("connect");
         }
     } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
         clear_station_link();
         if (station_is_requested()) {
-            const esp_err_t result = esp_wifi_connect();
-            if (result != ESP_OK && result != ESP_ERR_WIFI_CONN) {
-                ESP_LOGW(TAG, "Station reconnect could not be started: %s",
-                         esp_err_to_name(result));
-            }
+            schedule_station_reconnect();
         }
     } else if (event_id == WIFI_EVENT_STA_STOP) {
         clear_station_link();
+        if (s_reconnect_timer != NULL) {
+            (void)esp_timer_stop(s_reconnect_timer);
+        }
     }
 }
 
@@ -357,6 +395,17 @@ esp_err_t connectivity_init(void)
         return result;
     }
 
+    if (s_reconnect_timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = reconnect_timer_callback,
+            .name = "sta_reconnect",
+        };
+        result = esp_timer_create(&timer_args, &s_reconnect_timer);
+        if (result != ESP_OK) {
+            return result;
+        }
+    }
+
     result = esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL,
         &s_wifi_event_instance);
@@ -402,11 +451,13 @@ esp_err_t connectivity_start_station(const char *ssid, const char *password)
     xSemaphoreTake(s_control_lock, portMAX_DELAY);
 
     bool station_was_active;
+    const bool driver_was_started = s_wifi_started;
     taskENTER_CRITICAL(&s_status_lock);
     station_was_active = s_wifi_started && s_station_requested;
     s_station_requested = false;
     taskEXIT_CRITICAL(&s_status_lock);
-    if (s_wifi_started) {
+    s_connect_started_by_event = false;
+    if (station_was_active) {
         const esp_err_t disconnect_result = esp_wifi_disconnect();
         if (disconnect_result != ESP_OK &&
             disconnect_result != ESP_ERR_WIFI_NOT_CONNECT) {
@@ -446,12 +497,16 @@ esp_err_t connectivity_start_station(const char *ssid, const char *password)
     taskEXIT_CRITICAL(&s_status_lock);
 
     result = set_wifi_mode_and_start(mode);
-    /* A newly enabled STA interface connects from WIFI_EVENT_STA_START. When
-     * replacing credentials on an already-running STA there is no new start
-     * event, so initiate that one case here. */
-    if (result == ESP_OK && s_wifi_started && station_was_active) {
+    /* A driver started by this call connects from WIFI_EVENT_STA_START.  When
+     * the driver was already running (credentials replaced, or STA added to a
+     * live setup AP) that event either does not fire or is delivered before
+     * the request flag above is set, so connect explicitly here.  A duplicate
+     * call while a connection is already in progress returns
+     * ESP_ERR_WIFI_CONN, which is harmless. */
+    if (result == ESP_OK && driver_was_started && !s_connect_started_by_event) {
         const esp_err_t connect_result = esp_wifi_connect();
-        if (connect_result != ESP_OK && connect_result != ESP_ERR_WIFI_CONN) {
+        if (connect_result != ESP_OK && connect_result != ESP_ERR_WIFI_CONN &&
+            connect_result != ESP_ERR_WIFI_NOT_STARTED) {
             result = connect_result;
         }
     }
@@ -481,6 +536,9 @@ esp_err_t connectivity_stop_station(void)
     s_station_ssid[0] = '\0';
     refresh_active_interface_locked();
     taskEXIT_CRITICAL(&s_status_lock);
+    if (s_reconnect_timer != NULL) {
+        (void)esp_timer_stop(s_reconnect_timer);
+    }
 
     if (s_wifi_started) {
         const esp_err_t disconnect_result = esp_wifi_disconnect();
@@ -760,4 +818,37 @@ esp_err_t connectivity_get_status(connectivity_status_t *status)
     *status = s_status;
     taskEXIT_CRITICAL(&s_status_lock);
     return ESP_OK;
+}
+
+void connectivity_set_reconnect_delay(uint32_t delay_ms)
+{
+    if (delay_ms > CONNECTIVITY_MAX_RECONNECT_DELAY_MS) {
+        delay_ms = CONNECTIVITY_MAX_RECONNECT_DELAY_MS;
+    }
+    taskENTER_CRITICAL(&s_status_lock);
+    s_reconnect_delay_ms = delay_ms;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+esp_err_t connectivity_refresh_rssi(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool connected;
+    taskENTER_CRITICAL(&s_status_lock);
+    connected = s_status.connected;
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (!connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    wifi_ap_record_t access_point = {0};
+    const esp_err_t result = esp_wifi_sta_get_ap_info(&access_point);
+    taskENTER_CRITICAL(&s_status_lock);
+    if (s_status.connected) {
+        s_status.rssi_available = result == ESP_OK;
+        s_status.rssi_dbm = result == ESP_OK ? access_point.rssi : 0;
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+    return result;
 }

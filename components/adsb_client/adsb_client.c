@@ -22,6 +22,7 @@
 #define MAX_NORMAL_BACKOFF_S 300U
 #define MAX_RATE_BACKOFF_S 900U
 #define VALID_TIME_EPOCH 1704067200L
+#define URL_MAX_BYTES 192U
 
 static const char *TAG = "adsb_client";
 
@@ -44,9 +45,23 @@ typedef struct {
     airtrack_snapshot_t snapshot;
     char pending_hex[16];
     uint8_t pending_polls;
+    uint32_t polls_ok;
+    uint32_t polls_failed;
+    uint32_t connections;
 } adsb_context_t;
 
 static adsb_context_t s_client;
+
+/*
+ * The HTTP client is owned exclusively by the worker task and kept alive
+ * between polls so that a healthy feed reuses one TLS session instead of
+ * paying a full certificate-bundle handshake every few seconds. It is
+ * destroyed after any transport, protocol, or parse failure and rebuilt on
+ * the next attempt.
+ */
+static esp_http_client_handle_t s_http;
+static char s_http_url[URL_MAX_BYTES];
+static response_context_t s_response;
 
 _Static_assert(WORKER_STACK_BYTES % sizeof(StackType_t) == 0U,
                "ADS-B task stack must align to StackType_t");
@@ -68,7 +83,7 @@ static esp_err_t http_event(esp_http_client_event_t *event)
         return ESP_ERR_INVALID_ARG;
     }
     if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0 &&
-        context->parse_result == ESP_OK) {
+        context->parse_result == ESP_OK && context->parser != NULL) {
         context->parse_result = airtrack_stream_parser_feed(
             context->parser, event->data, (size_t)event->data_len);
         return context->parse_result;
@@ -108,14 +123,58 @@ static airtrack_snapshot_t current_snapshot(void)
     return snapshot;
 }
 
+/*
+ * Publish a non-poll state (offline, config required, time sync).  When a
+ * previous target is still held it is shown as STALE so the last known
+ * aircraft stays visible with an honest age.  Repeated calls with an unchanged
+ * outcome do not bump the sequence, so consumers are not woken needlessly.
+ */
 static void publish_waiting(airtrack_feed_state_t state,
                             airtrack_feed_error_t error)
 {
     airtrack_snapshot_t snapshot = current_snapshot();
+    const airtrack_feed_state_t effective =
+        snapshot.aircraft_count > 0U ? AIRTRACK_FEED_STALE : state;
+    if (snapshot.state == effective && snapshot.error == error) {
+        return;
+    }
     snapshot.sequence++;
     snapshot.updated_monotonic_ms = monotonic_ms();
-    snapshot.state = snapshot.aircraft_count > 0U ? AIRTRACK_FEED_STALE : state;
+    snapshot.state = effective;
     snapshot.error = error;
+    snapshot.http_status = 0;
+    snapshot.retry_after_s = 0U;
+    publish_snapshot(&snapshot);
+}
+
+/*
+ * Announce that polling is about to start only when leaving a state in which
+ * no request could be made.  A routine poll after a good response must not
+ * touch the published state, otherwise the display flickers LIVE -> STALE ->
+ * LIVE for the duration of every request.
+ */
+static void publish_searching_on_transition(void)
+{
+    airtrack_snapshot_t snapshot = current_snapshot();
+    const bool blocked_before =
+        snapshot.state == AIRTRACK_FEED_CONFIG_REQUIRED ||
+        snapshot.state == AIRTRACK_FEED_TIME_SYNC ||
+        (snapshot.state == AIRTRACK_FEED_OFFLINE &&
+         snapshot.error == AIRTRACK_ERROR_WIFI) ||
+        (snapshot.state == AIRTRACK_FEED_STALE &&
+         snapshot.error == AIRTRACK_ERROR_WIFI);
+    if (!blocked_before) {
+        return;
+    }
+    if (snapshot.aircraft_count > 0U) {
+        /* Keep the retained target visible; only clear the Wi-Fi error. */
+        snapshot.error = AIRTRACK_ERROR_NONE;
+    } else {
+        snapshot.state = AIRTRACK_FEED_SEARCHING;
+        snapshot.error = AIRTRACK_ERROR_NONE;
+    }
+    snapshot.sequence++;
+    snapshot.updated_monotonic_ms = monotonic_ms();
     snapshot.http_status = 0;
     publish_snapshot(&snapshot);
 }
@@ -155,15 +214,56 @@ static bool wait_or_stop(uint32_t milliseconds)
     return stop;
 }
 
+static void drop_http_client(void)
+{
+    if (s_http != NULL) {
+        esp_http_client_cleanup(s_http);
+        s_http = NULL;
+    }
+    s_http_url[0] = '\0';
+}
+
+static esp_err_t ensure_http_client(const char *url, bool *fresh)
+{
+    *fresh = false;
+    if (s_http != NULL && strcmp(url, s_http_url) == 0) {
+        return ESP_OK;
+    }
+    drop_http_client();
+
+    const esp_http_client_config_t config = {
+        .url = url,
+        .event_handler = http_event,
+        .user_data = &s_response,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = HTTP_TIMEOUT_MS,
+        .buffer_size = 2048,
+        .buffer_size_tx = 512,
+        .user_agent = "AirTrack/1.1 (ESP32-C6; personal non-commercial)",
+        .keep_alive_enable = true,
+        /* The production endpoint is canonical. Refuse redirects rather than
+         * allowing an untrusted Location header to select another host. */
+        .disable_auto_redirect = true,
+    };
+    s_http = esp_http_client_init(&config);
+    if (s_http == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    (void)esp_http_client_set_header(s_http, "Accept", "application/json");
+    (void)esp_http_client_set_header(s_http, "Accept-Encoding", "identity");
+    (void)snprintf(s_http_url, sizeof(s_http_url), "%s", url);
+    *fresh = true;
+    return ESP_OK;
+}
+
 static esp_err_t perform_poll(const airtrack_settings_t *settings,
                               airtrack_snapshot_t *result, int *http_status,
-                              uint32_t *retry_after_s)
+                              uint32_t *retry_after_s, bool *reused)
 {
-    if (retry_after_s == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
     *retry_after_s = 0U;
-    char url[192];
+    *http_status = 0;
+    *reused = false;
+    char url[URL_MAX_BYTES];
     const int url_length = snprintf(
         url, sizeof(url),
         "https://opendata.adsb.fi/api/v3/lat/%.6f/lon/%.6f/dist/%u",
@@ -174,48 +274,43 @@ static esp_err_t perform_poll(const airtrack_settings_t *settings,
         return ESP_ERR_INVALID_SIZE;
     }
 
+    bool fresh = false;
+    esp_err_t status = ensure_http_client(url, &fresh);
+    if (status != ESP_OK) {
+        return status;
+    }
+    *reused = !fresh;
+    if (fresh) {
+        ++s_client.connections;
+    }
+
     airtrack_stream_parser_t *parser =
         airtrack_stream_parser_create(settings);
     if (parser == NULL) {
+        drop_http_client();
         return ESP_ERR_NO_MEM;
     }
-    response_context_t response = {
+    s_response = (response_context_t) {
         .parser = parser,
         .parse_result = ESP_OK,
     };
-    const esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event,
-        .user_data = &response,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 2048,
-        .buffer_size_tx = 512,
-        .user_agent = "AirTrack/1.0 (ESP32-C6; personal non-commercial)",
-        .keep_alive_enable = true,
-        /* The production endpoint is canonical. Refuse redirects rather than
-         * allowing an untrusted Location header to select another host. */
-        .disable_auto_redirect = true,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) {
-        airtrack_stream_parser_destroy(parser);
-        return ESP_ERR_NO_MEM;
-    }
-    (void)esp_http_client_set_header(client, "Accept", "application/json");
-    (void)esp_http_client_set_header(client, "Accept-Encoding", "identity");
 
-    esp_err_t status = esp_http_client_perform(client);
-    *http_status = esp_http_client_get_status_code(client);
-    *retry_after_s = response.retry_after_s;
-    if (status == ESP_OK && response.parse_result != ESP_OK) {
-        status = response.parse_result;
+    status = esp_http_client_perform(s_http);
+    *http_status = esp_http_client_get_status_code(s_http);
+    *retry_after_s = s_response.retry_after_s;
+    if (status == ESP_OK && s_response.parse_result != ESP_OK) {
+        status = s_response.parse_result;
     }
     if (status == ESP_OK && *http_status == 200) {
         status = airtrack_stream_parser_finish(parser, result);
     }
-    esp_http_client_cleanup(client);
+    s_response.parser = NULL;
     airtrack_stream_parser_destroy(parser);
+
+    /* Only a completely healthy exchange earns connection reuse. */
+    if (status != ESP_OK || *http_status != 200) {
+        drop_http_client();
+    }
     return status;
 }
 
@@ -235,6 +330,7 @@ static void worker(void *argument)
             break;
         }
         if (!settings.location_configured) {
+            drop_http_client();
             publish_waiting(AIRTRACK_FEED_CONFIG_REQUIRED, AIRTRACK_ERROR_CONFIG);
             if (wait_or_stop(1000U)) {
                 break;
@@ -242,6 +338,7 @@ static void worker(void *argument)
             continue;
         }
         if (!online) {
+            drop_http_client();
             publish_waiting(AIRTRACK_FEED_OFFLINE, AIRTRACK_ERROR_WIFI);
             if (wait_or_stop(1000U)) {
                 break;
@@ -256,19 +353,40 @@ static void worker(void *argument)
             continue;
         }
 
-        const int64_t since_request = monotonic_ms() - previous_request_ms;
-        if (since_request >= 0 && since_request < MINIMUM_REQUEST_INTERVAL_MS &&
-            wait_or_stop((uint32_t)(MINIMUM_REQUEST_INTERVAL_MS - since_request))) {
-            break;
-        }
-        previous_request_ms = monotonic_ms();
-        publish_waiting(AIRTRACK_FEED_SEARCHING, AIRTRACK_ERROR_NONE);
+        publish_searching_on_transition();
 
         airtrack_snapshot_t candidate;
         int http_status = 0;
         uint32_t retry_after_s = 0U;
-        const esp_err_t poll_result =
-            perform_poll(&settings, &candidate, &http_status, &retry_after_s);
+        esp_err_t poll_result = ESP_FAIL;
+        bool stop_now = false;
+        /* A reused keep-alive connection may have been closed by the server
+         * while idle; that costs one transparent retry, not a backoff. */
+        for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+            const int64_t since_request = monotonic_ms() - previous_request_ms;
+            if (since_request >= 0 &&
+                since_request < MINIMUM_REQUEST_INTERVAL_MS &&
+                wait_or_stop((uint32_t)(MINIMUM_REQUEST_INTERVAL_MS -
+                                        since_request))) {
+                stop_now = true;
+                break;
+            }
+            previous_request_ms = monotonic_ms();
+            bool reused = false;
+            poll_result = perform_poll(&settings, &candidate, &http_status,
+                                       &retry_after_s, &reused);
+            const bool transport_failure =
+                poll_result != ESP_OK && http_status == 0;
+            if (!(reused && transport_failure)) {
+                break;
+            }
+            ESP_LOGD(TAG, "Keep-alive connection lost (%s); reconnecting",
+                     esp_err_to_name(poll_result));
+        }
+        if (stop_now) {
+            break;
+        }
+
         uint32_t next_delay_s = settings.poll_interval_s;
         if (poll_result == ESP_OK && http_status == 200) {
             airtrack_snapshot_t previous = current_snapshot();
@@ -282,6 +400,9 @@ static void worker(void *argument)
                                              &s_client.pending_polls);
             publish_snapshot(&candidate);
             failure_backoff_s = 5U;
+            xSemaphoreTake(s_client.lock, portMAX_DELAY);
+            ++s_client.polls_ok;
+            xSemaphoreGive(s_client.lock);
             ESP_LOGI(TAG, "adsb.fi: %lu reports, %lu accepted, nearest=%s",
                      (unsigned long)candidate.aircraft_reported,
                      (unsigned long)candidate.aircraft_accepted,
@@ -312,6 +433,9 @@ static void worker(void *argument)
                 next_delay_s = failure_backoff_s;
             }
             publish_failure(error, http_status, next_delay_s);
+            xSemaphoreTake(s_client.lock, portMAX_DELAY);
+            ++s_client.polls_failed;
+            xSemaphoreGive(s_client.lock);
             ESP_LOGW(TAG, "adsb.fi poll failed: %s, HTTP %d; retry %lus",
                      esp_err_to_name(poll_result), http_status,
                      (unsigned long)next_delay_s);
@@ -330,6 +454,7 @@ static void worker(void *argument)
         }
     }
 
+    drop_http_client();
     xSemaphoreTake(s_client.lock, portMAX_DELAY);
     s_client.running = false;
     s_client.task = NULL;
@@ -358,10 +483,16 @@ esp_err_t adsb_client_start(const airtrack_settings_t *settings)
     s_client.online = false;
     s_client.pending_hex[0] = '\0';
     s_client.pending_polls = 0U;
+    s_client.polls_ok = 0U;
+    s_client.polls_failed = 0U;
+    s_client.connections = 0U;
     memset(&s_client.snapshot, 0, sizeof(s_client.snapshot));
     s_client.snapshot.state = settings->location_configured
                                   ? AIRTRACK_FEED_OFFLINE
                                   : AIRTRACK_FEED_CONFIG_REQUIRED;
+    s_client.snapshot.error = settings->location_configured
+                                  ? AIRTRACK_ERROR_WIFI
+                                  : AIRTRACK_ERROR_CONFIG;
     s_client.snapshot.config_generation = settings->generation;
     s_client.running = true;
     s_client.task = xTaskCreateStatic(
@@ -386,10 +517,11 @@ esp_err_t adsb_client_set_online(bool online)
         xSemaphoreGive(s_client.lock);
         return ESP_ERR_INVALID_STATE;
     }
+    const bool changed = s_client.online != online;
     s_client.online = online;
     const TaskHandle_t task = s_client.task;
     xSemaphoreGive(s_client.lock);
-    if (task != NULL) {
+    if (task != NULL && changed) {
         xTaskNotifyGive(task);
     }
     return ESP_OK;
@@ -422,6 +554,19 @@ esp_err_t adsb_client_get_snapshot(airtrack_snapshot_t *snapshot)
     }
     xSemaphoreTake(s_client.lock, portMAX_DELAY);
     *snapshot = s_client.snapshot;
+    xSemaphoreGive(s_client.lock);
+    return ESP_OK;
+}
+
+esp_err_t adsb_client_get_stats(adsb_client_stats_t *stats)
+{
+    if (stats == NULL || s_client.lock == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_client.lock, portMAX_DELAY);
+    stats->polls_ok = s_client.polls_ok;
+    stats->polls_failed = s_client.polls_failed;
+    stats->connections = s_client.connections;
     xSemaphoreGive(s_client.lock);
     return ESP_OK;
 }

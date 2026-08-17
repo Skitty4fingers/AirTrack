@@ -33,11 +33,16 @@ typedef struct {
     bool rssi_available;
     int8_t rssi_dbm;
     bool sd_mounted;
+    bool sd_logging_enabled;
+    uint32_t sd_records_written;
     uint32_t flash_bytes;
     uint32_t uptime_s;
     uint32_t free_heap_bytes;
     uint32_t minimum_free_heap_bytes;
     bool time_synchronized;
+    uint32_t polls_ok;
+    uint32_t polls_failed;
+    uint32_t tls_connections;
     airtrack_settings_t settings;
     airtrack_snapshot_t aircraft;
 } status_web_snapshot_storage_t;
@@ -74,16 +79,29 @@ static const char PAGE_HEAD[] =
     "<title>AirTrack</title><style>"
     ":root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;"
     "background:#071017;color:#eef8fb}*{box-sizing:border-box}"
-    "body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;"
+    "body{margin:0;min-height:100vh;display:grid;place-items:start center;padding:20px;"
     "background:radial-gradient(circle at top,#173544,#071017 58%)}"
-    "main{width:min(100%,440px)}h1{font-size:2rem;letter-spacing:.04em;"
-    "margin:.15em 0}.eyebrow{color:#63e6be;font-weight:750;letter-spacing:.18em;"
-    "font-size:.74rem}.lead{color:#b9cbd2;line-height:1.5;margin:.4rem 0 1.2rem}"
+    "main{width:min(100%,520px)}h1{font-size:1.9rem;letter-spacing:.04em;"
+    "margin:.15em 0}h2{margin:.2em 0 .4em;font-size:1.7rem;overflow-wrap:anywhere}"
+    ".eyebrow{color:#63e6be;font-weight:750;letter-spacing:.18em;"
+    "font-size:.74rem;display:flex;justify-content:space-between;align-items:center}"
+    ".lead{color:#b9cbd2;line-height:1.5;margin:.4rem 0 1.2rem}"
     ".card{background:#0e2029;border:1px solid #28414c;border-radius:18px;"
     "padding:18px;box-shadow:0 20px 60px #0008;margin:12px 0}"
-    ".grid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:11px 16px;"
+    ".grid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 16px;"
     "align-items:baseline}.grid span{color:#8faab5}.grid strong,.grid code{"
     "overflow-wrap:anywhere;color:#fff}.ok{color:#63e6be!important}"
+    ".big{font-size:2.6rem;font-weight:800;color:#63e6be;line-height:1.1;margin:4px 0}"
+    ".meta{color:#8faab5;margin:0 0 10px}"
+    ".pill{font-size:.7rem;letter-spacing:.12em;padding:3px 9px;border-radius:99px;"
+    "background:#38535f;color:#fff}.pill.live{background:#63e6be;color:#05241c}"
+    ".pill.stale,.pill.config_required{background:#ffb454;color:#2b1a00}"
+    ".pill.offline{background:#ff647c;color:#2b0009}"
+    ".pill.empty,.pill.searching,.pill.time_sync{background:#55d9f3;color:#062231}"
+    "table{width:100%;border-collapse:collapse;font-size:.88rem;margin-top:8px}"
+    "th{text-align:left;color:#8faab5;font-weight:600;padding:4px 6px 6px 0}"
+    "td{padding:5px 6px 5px 0;border-top:1px solid #1c3039;white-space:nowrap}"
+    "td:first-child{color:#fff;font-weight:700}tr.emergency td{color:#ff647c}"
     "label{display:block;color:#b9cbd2;font-size:.84rem;margin:12px 0 5px}"
     "input{width:100%;padding:11px;border:1px solid #38535f;border-radius:10px;"
     "font:inherit;color:#fff;background:#07141a}button{width:100%;margin-top:16px;"
@@ -91,10 +109,13 @@ static const char PAGE_HEAD[] =
     "color:#05241c;background:#63e6be}"
     ".hint,footer{color:#8faab5;font-size:.8rem;line-height:1.5}"
     "footer{text-align:center;margin-top:15px}footer strong{color:#b9cbd2}"
+    "[hidden]{display:none!important}"
     "</style></head><body><main><div class=eyebrow>LOCAL STATUS</div>"
-    "<h1>AirTrack is online</h1><p class=lead>This display is connected to your "
-    "Wi-Fi network and ready for the aircraft-tracking service.</p>"
-    "<section class=card><div class=eyebrow>NETWORK</div><div class=grid>"
+    "<h1>AirTrack</h1><p class=lead>Nearest aircraft to this display, refreshed "
+    "every few seconds from adsb.fi.</p>";
+
+static const char PAGE_NETWORK[] =
+    "<section class=card><div class=eyebrow>NETWORK &amp; SYSTEM</div><div class=grid>"
     "<span>Status</span><strong class=ok>Connected</strong>"
     "<span>SSID</span><strong>";
 
@@ -102,14 +123,22 @@ static const char PAGE_AFTER_SSID[] =
     "</strong><span>Address</span><code>";
 
 static const char PAGE_AFTER_IP[] =
-    "</code><span>Signal</span><strong>";
+    "</code><span>Signal</span><strong id=rssi>";
 
-static const char PAGE_SYSTEM[] =
-    "</strong></div></section><section class=card><div class=eyebrow>SYSTEM"
-    "</div><div class=grid><span>Firmware</span><strong>";
+static const char PAGE_AFTER_SIGNAL[] =
+    "</strong><span>Uptime</span><strong id=uptime>";
+
+static const char PAGE_AFTER_UPTIME[] =
+    "</strong><span>Feed polls</span><strong id=polls>";
+
+static const char PAGE_AFTER_POLLS[] =
+    "</strong><span>Heap</span><strong id=heap>";
+
+static const char PAGE_AFTER_HEAP[] =
+    "</strong><span>Firmware</span><strong>";
 
 static const char PAGE_AFTER_VERSION[] =
-    "</strong><span>SD card</span><strong>";
+    "</strong><span>SD card</span><strong id=sd>";
 
 static const char PAGE_AFTER_SD[] =
     "</strong><span>Flash</span><strong>";
@@ -120,7 +149,60 @@ static const char PAGE_TAIL[] =
 static const char PAGE_FOOTER[] =
     "<footer><strong>Data: <a href=https://adsb.fi>adsb.fi</a></strong><br>"
     "Personal, non-commercial use. Not for navigation or collision "
-    "avoidance.</footer></main></body></html>";
+    "avoidance.</footer></main><script src=/app.js></script></body></html>";
+
+/*
+ * Dashboard script served from /app.js so the CSP can stay at
+ * script-src 'self' without inline code.  It only reads the two JSON
+ * endpoints on this origin and rewrites text content; no HTML is injected.
+ */
+static const char APP_JS[] =
+    "(function(){"
+    "function $(i){return document.getElementById(i)}"
+    "function t(i,v){var e=$(i);if(e&&e.textContent!==String(v))e.textContent=v}"
+    "function p3(v){v=Math.round(v)%360;return (v<100?(v<10?'00':'0'):'')+v}"
+    "function up(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),"
+    "m=Math.floor(s%3600/60);return (d?d+'d ':'')+h+'h '+m+'m'}"
+    "var unit='NM',f=1;"
+    "function dist(nm){return (nm*f).toFixed(1)+' '+unit}"
+    "function alt(a){return a.ground?'ground':a.altitude_valid?"
+    "a.altitude_ft.toLocaleString()+' ft':'--'}"
+    "function name(a){return a.callsign||a.registration||a.hex}"
+    "function vs(a){if(!a.vertical_rate_valid||a.ground)return '--';var r=a."
+    "vertical_rate_fpm;return (r>0?'\\u25B2 ':r<0?'\\u25BC ':'')+Math.abs(r)+' fpm'}"
+    "function air(j){unit=j.unit||'NM';f=unit==='km'?1.852:unit==='mi'?1.150779:1;"
+    "var s=$('state');if(s){s.textContent=j.state.replace('_',' ').toUpperCase();"
+    "s.className='pill '+j.state}"
+    "var l=j.aircraft||[],tg=$('target'),em=$('empty');"
+    "if(l.length){var a=l[0];t('id',name(a));t('meta',[a.registration!==name(a)?"
+    "a.registration:'',a.type,a.emergency?'EMERGENCY':''].filter(Boolean).join(' \\u00B7 '));"
+    "t('dist',dist(a.distance_nm));t('brg',p3(a.bearing_deg)+'\\u00B0 true');"
+    "t('alt',alt(a));t('vs',vs(a));t('spd',a.speed_valid?a.ground_speed_kt."
+    "toFixed(0)+' kt':'--');t('trk',a.track_valid?p3(a.track_deg)+'\\u00B0':'--');"
+    "t('sqk',a.squawk||'--');t('age',a.age_s.toFixed(0)+' s');"
+    "if(tg)tg.hidden=false;if(em)em.hidden=true}"
+    "else{if(tg)tg.hidden=true;if(em)em.hidden=false;"
+    "t('ehead',j.state==='empty'?'No recent aircraft':j.state==='config_required'?"
+    "'Set tracking location':'Waiting for aircraft data');"
+    "t('esub','Feed: '+j.state+(j.error!=='none'?' \\u00B7 '+j.error:''))}"
+    "var tb=$('rows');if(tb){while(tb.firstChild)tb.removeChild(tb.firstChild);"
+    "l.forEach(function(a){var tr=document.createElement('tr');"
+    "[name(a),a.type||'',dist(a.distance_nm),p3(a.bearing_deg)+'\\u00B0',alt(a),"
+    "a.speed_valid?a.ground_speed_kt.toFixed(0)+' kt':'--'].forEach(function(v){"
+    "var td=document.createElement('td');td.textContent=v;tr.appendChild(td)});"
+    "if(a.emergency)tr.className='emergency';tb.appendChild(tr)})}"
+    "t('counts',j.accepted+' shown of '+j.reported+' reports within '+j.radius_nm+"
+    "' NM'+(j.last_success_age_s!==null?' \\u00B7 updated '+j.last_success_age_s+' s ago':''))}"
+    "function st(j){t('rssi',j.rssi_dbm===null?'Unavailable':j.rssi_dbm+' dBm');"
+    "t('uptime',up(j.uptime_s));t('heap',(j.free_heap_bytes/1024).toFixed(0)+"
+    "' KiB free \\u00B7 min '+(j.minimum_free_heap_bytes/1024).toFixed(0)+' KiB');"
+    "t('polls',j.polls_ok+' ok \\u00B7 '+j.polls_failed+' failed \\u00B7 '+"
+    "j.tls_connections+' TLS');t('sd',j.sd_mounted?(j.sd_logging?'Logging ('+"
+    "j.sd_records+' records)':'Mounted, logging off'):'Unavailable')}"
+    "function get(u,cb){fetch(u,{cache:'no-store'}).then(function(r){return r.json()})"
+    ".then(cb).catch(function(){})}"
+    "function tick(){get('/api/v1/aircraft',air);get('/api/v1/status',st)}"
+    "tick();setInterval(tick,2000);})();";
 
 static SemaphoreHandle_t lifecycle_lock(void)
 {
@@ -276,11 +358,16 @@ static esp_err_t normalize_snapshot(
     destination->rssi_available = source->rssi_available;
     destination->rssi_dbm = source->rssi_dbm;
     destination->sd_mounted = source->sd_mounted;
+    destination->sd_logging_enabled = source->sd_logging_enabled;
+    destination->sd_records_written = source->sd_records_written;
     destination->flash_bytes = source->flash_bytes;
     destination->uptime_s = source->uptime_s;
     destination->free_heap_bytes = source->free_heap_bytes;
     destination->minimum_free_heap_bytes = source->minimum_free_heap_bytes;
     destination->time_synchronized = source->time_synchronized;
+    destination->polls_ok = source->polls_ok;
+    destination->polls_failed = source->polls_failed;
+    destination->tls_connections = source->tls_connections;
     destination->settings = *source->settings;
     destination->aircraft = *source->aircraft;
     return ESP_OK;
@@ -333,8 +420,9 @@ static esp_err_t set_security_headers(httpd_req_t *request)
     if (result == ESP_OK) {
         result = httpd_resp_set_hdr(
             request, "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-            "base-uri 'none'; frame-ancestors 'none'");
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; "
+            "connect-src 'self'; form-action 'self'; base-uri 'none'; "
+            "frame-ancestors 'none'");
     }
     if (result == ESP_OK) {
         result =
@@ -535,25 +623,92 @@ static const char *distance_suffix(airtrack_distance_unit_t unit)
            : unit == AIRTRACK_DISTANCE_MI ? "mi" : "NM";
 }
 
+static double seconds_since_success(
+    const status_web_snapshot_storage_t *snapshot)
+{
+    const int64_t current_ms = (int64_t)snapshot->uptime_s * 1000LL;
+    if (snapshot->aircraft.last_success_monotonic_ms > 0 &&
+        current_ms > snapshot->aircraft.last_success_monotonic_ms) {
+        return (double)(current_ms -
+                        snapshot->aircraft.last_success_monotonic_ms) / 1000.0;
+    }
+    return 0.0;
+}
+
 static double current_position_age_s(
     const status_web_snapshot_storage_t *snapshot,
     const airtrack_aircraft_t *aircraft)
 {
-    double age = aircraft->seen_pos_s;
-    const int64_t current_ms = (int64_t)snapshot->uptime_s * 1000LL;
-    if (aircraft != NULL && snapshot->aircraft.updated_monotonic_ms > 0 &&
-        current_ms > snapshot->aircraft.updated_monotonic_ms) {
-        age += (double)(current_ms - snapshot->aircraft.updated_monotonic_ms) /
-               1000.0;
+    return aircraft->seen_pos_s + seconds_since_success(snapshot);
+}
+
+static esp_err_t send_aircraft_row(httpd_req_t *request,
+                                   const status_web_snapshot_storage_t *snapshot,
+                                   const airtrack_aircraft_t *aircraft)
+{
+    esp_err_t result = send_html_chunk(
+        request, aircraft->emergency ? "<tr class=emergency><td>" : "<tr><td>");
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, aircraft_identity(aircraft));
     }
-    return age;
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</td><td>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, aircraft->aircraft_type);
+    }
+    if (result == ESP_OK) {
+        char cells[128];
+        char altitude[24];
+        if (aircraft->ground) {
+            memcpy(altitude, "ground", sizeof("ground"));
+        } else if (aircraft->altitude_valid) {
+            (void)snprintf(altitude, sizeof(altitude), "%ld ft",
+                           (long)aircraft->altitude_ft);
+        } else {
+            memcpy(altitude, "--", sizeof("--"));
+        }
+        char speed[16];
+        if (aircraft->ground_speed_valid) {
+            (void)snprintf(speed, sizeof(speed), "%.0f kt",
+                           (double)aircraft->ground_speed_kt);
+        } else {
+            memcpy(speed, "--", sizeof("--"));
+        }
+        const int length = snprintf(
+            cells, sizeof(cells),
+            "</td><td>%.1f %s</td><td>%03.0f&deg;</td><td>%s</td><td>%s</td></tr>",
+            (double)display_distance(aircraft->distance_nm,
+                                     snapshot->settings.distance_unit),
+            distance_suffix(snapshot->settings.distance_unit),
+            (double)aircraft->bearing_deg, altitude, speed);
+        result = (length < 0 || (size_t)length >= sizeof(cells))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, cells, (size_t)length);
+    }
+    return result;
 }
 
 static esp_err_t send_tracking_cards(
     httpd_req_t *request, const status_web_snapshot_storage_t *snapshot)
 {
-    esp_err_t result = send_html_chunk(
-        request, "<section class=card><div class=eyebrow>NEAREST AIRCRAFT</div>");
+    esp_err_t result = send_html_chunk(request,
+        "<section class=card><div class=eyebrow><span>NEAREST AIRCRAFT</span>"
+        "<span id=state class=\"pill ");
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            airtrack_feed_state_name(snapshot->aircraft.state));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "\">");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            airtrack_feed_state_name(snapshot->aircraft.state));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</span></div>");
+    }
     if (result != ESP_OK) {
         return result;
     }
@@ -578,96 +733,162 @@ static esp_err_t send_tracking_cards(
                 "<label for=radius>Radius (nautical miles)</label>"
                 "<input id=radius name=radius type=number min=1 max=250 "
                 "value=25 required><button type=submit>Start tracking</button>"
-                "</form>");
+                "</form></section>");
         }
-    } else if (snapshot->aircraft.aircraft_count == 0U) {
-        char message[160];
-        const int length = snprintf(
-            message, sizeof(message), "<h2>%s</h2><p class=hint>Feed: %s",
-            snapshot->aircraft.state == AIRTRACK_FEED_EMPTY
-                ? "No recent aircraft" : "Waiting for aircraft data",
-            airtrack_feed_state_name(snapshot->aircraft.state));
-        result = (length < 0 || (size_t)length >= sizeof(message))
-                     ? ESP_ERR_INVALID_SIZE
-                     : httpd_resp_send_chunk(request, message, (size_t)length);
-        if (result == ESP_OK && snapshot->aircraft.error != AIRTRACK_ERROR_NONE) {
-            result = send_html_chunk(request, " &middot; ");
-        }
-        if (result == ESP_OK && snapshot->aircraft.error != AIRTRACK_ERROR_NONE) {
-            result = send_html_escaped(
-                request, airtrack_feed_error_name(snapshot->aircraft.error));
-        }
-        if (result == ESP_OK) {
-            result = send_html_chunk(request, "</p>");
-        }
-    } else {
-        const airtrack_aircraft_t *aircraft = &snapshot->aircraft.aircraft[0];
-        result = send_html_chunk(request, "<h2>");
-        if (result == ESP_OK) {
-            result = send_html_escaped(request, aircraft_identity(aircraft));
-        }
-        char altitude[32];
-        char speed[32];
-        if (aircraft->ground) {
-            memcpy(altitude, "GROUND", sizeof("GROUND"));
-        } else if (aircraft->altitude_valid) {
-            (void)snprintf(altitude, sizeof(altitude), "%ld ft",
-                           (long)aircraft->altitude_ft);
-        } else {
-            memcpy(altitude, "--", sizeof("--"));
-        }
-        if (aircraft->ground_speed_valid) {
-            (void)snprintf(speed, sizeof(speed), "%.0f kt",
-                           (double)aircraft->ground_speed_kt);
-        } else {
-            memcpy(speed, "--", sizeof("--"));
-        }
-        char details[384];
-        const int length = snprintf(
-            details, sizeof(details),
-            "</h2><div class=grid><span>Distance</span><strong>%.1f %s</strong>"
-            "<span>Bearing</span><strong>%03.0f&deg; true</strong>"
-            "<span>Altitude</span><strong>%s</strong>"
-            "<span>Speed</span><strong>%s</strong>"
-            "<span>Position age</span><strong>%.1f s</strong>"
-            "<span>Feed</span><strong>%s</strong></div>",
-            (double)display_distance(aircraft->distance_nm,
-                                     snapshot->settings.distance_unit),
-            distance_suffix(snapshot->settings.distance_unit),
-            (double)aircraft->bearing_deg,
-            altitude, speed,
-            current_position_age_s(snapshot, aircraft),
-            airtrack_feed_state_name(snapshot->aircraft.state));
-        if (length < 0 || (size_t)length >= sizeof(details)) {
-            return ESP_ERR_INVALID_SIZE;
+        return result;
+    }
+
+    const bool have_target = snapshot->aircraft.aircraft_count > 0U;
+    const airtrack_aircraft_t *aircraft = &snapshot->aircraft.aircraft[0];
+
+    /* Empty-state block (hidden while a target exists). */
+    char message[200];
+    int length = snprintf(
+        message, sizeof(message),
+        "<div id=empty%s><h2 id=ehead>%s</h2><p id=esub class=hint>Feed: %s%s%s</p></div>",
+        have_target ? " hidden" : "",
+        snapshot->aircraft.state == AIRTRACK_FEED_EMPTY
+            ? "No recent aircraft" : "Waiting for aircraft data",
+        airtrack_feed_state_name(snapshot->aircraft.state),
+        snapshot->aircraft.error != AIRTRACK_ERROR_NONE ? " &middot; " : "",
+        snapshot->aircraft.error != AIRTRACK_ERROR_NONE
+            ? airtrack_feed_error_name(snapshot->aircraft.error) : "");
+    result = (length < 0 || (size_t)length >= sizeof(message))
+                 ? ESP_ERR_INVALID_SIZE
+                 : httpd_resp_send_chunk(request, message, (size_t)length);
+
+    /* Target block (hidden while empty). */
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            have_target ? "<div id=target><h2 id=id>" : "<div id=target hidden><h2 id=id>");
+    }
+    if (result == ESP_OK && have_target) {
+        result = send_html_escaped(request, aircraft_identity(aircraft));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</h2><p id=meta class=meta>");
+    }
+    if (result == ESP_OK && have_target) {
+        if (aircraft->registration[0] != '\0' &&
+            strcmp(aircraft->registration, aircraft_identity(aircraft)) != 0) {
+            result = send_html_escaped(request, aircraft->registration);
+            if (result == ESP_OK && aircraft->aircraft_type[0] != '\0') {
+                result = send_html_chunk(request, " &middot; ");
+            }
         }
         if (result == ESP_OK) {
-            result = httpd_resp_send_chunk(request, details, (size_t)length);
+            result = send_html_escaped(request, aircraft->aircraft_type);
         }
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, "</section>");
+        char altitude[32];
+        char speed[32];
+        char vertical[32];
+        char track[16];
+        if (!have_target) {
+            memcpy(altitude, "--", sizeof("--"));
+            memcpy(speed, "--", sizeof("--"));
+            memcpy(vertical, "--", sizeof("--"));
+            memcpy(track, "--", sizeof("--"));
+        } else {
+            if (aircraft->ground) {
+                memcpy(altitude, "ground", sizeof("ground"));
+            } else if (aircraft->altitude_valid) {
+                (void)snprintf(altitude, sizeof(altitude), "%ld ft",
+                               (long)aircraft->altitude_ft);
+            } else {
+                memcpy(altitude, "--", sizeof("--"));
+            }
+            if (aircraft->ground_speed_valid) {
+                (void)snprintf(speed, sizeof(speed), "%.0f kt",
+                               (double)aircraft->ground_speed_kt);
+            } else {
+                memcpy(speed, "--", sizeof("--"));
+            }
+            if (aircraft->vertical_rate_valid && !aircraft->ground) {
+                (void)snprintf(vertical, sizeof(vertical), "%+ld fpm",
+                               (long)aircraft->vertical_rate_fpm);
+            } else {
+                memcpy(vertical, "--", sizeof("--"));
+            }
+            if (aircraft->track_valid) {
+                (void)snprintf(track, sizeof(track), "%03.0f&deg;",
+                               (double)aircraft->track_deg);
+            } else {
+                memcpy(track, "--", sizeof("--"));
+            }
+        }
+        char details[640];
+        length = snprintf(
+            details, sizeof(details),
+            "</p><div id=dist class=big>%.1f %s</div><div class=grid>"
+            "<span>Bearing</span><strong id=brg>%03.0f&deg; true</strong>"
+            "<span>Altitude</span><strong id=alt>%s</strong>"
+            "<span>Vertical rate</span><strong id=vs>%s</strong>"
+            "<span>Ground speed</span><strong id=spd>%s</strong>"
+            "<span>Track</span><strong id=trk>%s</strong>"
+            "<span>Squawk</span><strong id=sqk>%s</strong>"
+            "<span>Position age</span><strong id=age>%.0f s</strong></div></div>",
+            have_target ? (double)display_distance(
+                aircraft->distance_nm, snapshot->settings.distance_unit) : 0.0,
+            distance_suffix(snapshot->settings.distance_unit),
+            have_target ? (double)aircraft->bearing_deg : 0.0,
+            altitude, vertical, speed, track,
+            have_target && aircraft->squawk[0] != '\0' ? aircraft->squawk : "--",
+            have_target ? current_position_age_s(snapshot, aircraft) : 0.0);
+        if (length < 0 || (size_t)length >= sizeof(details)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        result = httpd_resp_send_chunk(request, details, (size_t)length);
     }
-    if (result == ESP_OK && snapshot->settings.location_configured) {
-        result = send_html_chunk(request, "<section class=card>"
-            "<div class=eyebrow>TRACKING SETTINGS</div><div class=grid>");
+
+    /* Top-five table. */
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "<table><thead><tr><th>Aircraft</th><th>Type</th><th>Distance</th>"
+            "<th>Bearing</th><th>Altitude</th><th>Speed</th></tr></thead>"
+            "<tbody id=rows>");
     }
-    if (result == ESP_OK && snapshot->settings.location_configured) {
+    for (size_t index = 0U;
+         result == ESP_OK && index < snapshot->aircraft.aircraft_count; ++index) {
+        result = send_aircraft_row(request, snapshot,
+                                   &snapshot->aircraft.aircraft[index]);
+    }
+    if (result == ESP_OK) {
+        length = snprintf(
+            message, sizeof(message),
+            "</tbody></table><p id=counts class=hint>%lu shown of %lu reports "
+            "within %u NM</p></section>",
+            (unsigned long)snapshot->aircraft.aircraft_accepted,
+            (unsigned long)snapshot->aircraft.aircraft_reported,
+            (unsigned)snapshot->settings.radius_nm);
+        result = (length < 0 || (size_t)length >= sizeof(message))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, message, (size_t)length);
+    }
+
+    if (result == ESP_OK) {
         char settings[1024];
-        const int length = snprintf(
+        length = snprintf(
             settings, sizeof(settings),
+            "<section class=card><div class=eyebrow>TRACKING SETTINGS</div>"
+            "<div class=grid>"
             "<span>Latitude</span><strong>%.6f</strong>"
             "<span>Longitude</span><strong>%.6f</strong>"
             "<span>Radius</span><strong>%u NM</strong>"
             "<span>Poll interval</span><strong>%u s</strong>"
             "<span>Ground aircraft</span><strong>%s</strong>"
+            "<span>Units</span><strong>%s</strong>"
+            "<span>Brightness</span><strong>%u%%</strong>"
             "</div><p class=hint>Hold BOOT for five seconds to reopen secure "
-            "setup and change Wi-Fi or tracking settings.</p></section>",
+            "setup and change Wi-Fi, location, or these options.</p></section>",
             (double)snapshot->settings.latitude_e7 / 10000000.0,
             (double)snapshot->settings.longitude_e7 / 10000000.0,
             (unsigned)snapshot->settings.radius_nm,
             (unsigned)snapshot->settings.poll_interval_s,
-            snapshot->settings.include_ground ? "Included" : "Excluded");
+            snapshot->settings.include_ground ? "Included" : "Excluded",
+            distance_suffix(snapshot->settings.distance_unit),
+            (unsigned)snapshot->settings.brightness_percent);
         result = (length < 0 || (size_t)length >= sizeof(settings))
                      ? ESP_ERR_INVALID_SIZE
                      : httpd_resp_send_chunk(request, settings, (size_t)length);
@@ -712,6 +933,29 @@ static esp_err_t status_page_handler(httpd_req_t *request)
         return ESP_ERR_INVALID_SIZE;
     }
 
+    char uptime[32];
+    (void)snprintf(uptime, sizeof(uptime), "%luh %02lum",
+                   (unsigned long)(snapshot.uptime_s / 3600U),
+                   (unsigned long)((snapshot.uptime_s % 3600U) / 60U));
+    char polls[64];
+    (void)snprintf(polls, sizeof(polls), "%lu ok · %lu failed · %lu TLS",
+                   (unsigned long)snapshot.polls_ok,
+                   (unsigned long)snapshot.polls_failed,
+                   (unsigned long)snapshot.tls_connections);
+    char heap[64];
+    (void)snprintf(heap, sizeof(heap), "%lu KiB free · min %lu KiB",
+                   (unsigned long)(snapshot.free_heap_bytes / 1024U),
+                   (unsigned long)(snapshot.minimum_free_heap_bytes / 1024U));
+    char sd[48];
+    if (!snapshot.sd_mounted) {
+        memcpy(sd, "Unavailable", sizeof("Unavailable"));
+    } else if (snapshot.sd_logging_enabled) {
+        (void)snprintf(sd, sizeof(sd), "Logging (%lu records)",
+                       (unsigned long)snapshot.sd_records_written);
+    } else {
+        memcpy(sd, "Mounted, logging off", sizeof("Mounted, logging off"));
+    }
+
     esp_err_t result =
         httpd_resp_set_type(request, "text/html; charset=utf-8");
     if (result == ESP_OK) {
@@ -719,6 +963,12 @@ static esp_err_t status_page_handler(httpd_req_t *request)
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_HEAD);
+    }
+    if (result == ESP_OK) {
+        result = send_tracking_cards(request, &snapshot);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_NETWORK);
     }
     if (result == ESP_OK) {
         result = send_html_escaped(request, snapshot.ssid);
@@ -736,7 +986,25 @@ static esp_err_t status_page_handler(httpd_req_t *request)
         result = send_html_escaped(request, signal);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, PAGE_SYSTEM);
+        result = send_html_chunk(request, PAGE_AFTER_SIGNAL);
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, uptime);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_AFTER_UPTIME);
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, polls);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_AFTER_POLLS);
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, heap);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_AFTER_HEAP);
     }
     if (result == ESP_OK) {
         result = send_html_escaped(request, version);
@@ -745,8 +1013,7 @@ static esp_err_t status_page_handler(httpd_req_t *request)
         result = send_html_chunk(request, PAGE_AFTER_VERSION);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request,
-                                 snapshot.sd_mounted ? "Mounted" : "Unavailable");
+        result = send_html_escaped(request, sd);
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_AFTER_SD);
@@ -758,13 +1025,27 @@ static esp_err_t status_page_handler(httpd_req_t *request)
         result = send_html_chunk(request, PAGE_TAIL);
     }
     if (result == ESP_OK) {
-        result = send_tracking_cards(request, &snapshot);
-    }
-    if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_FOOTER);
     }
     if (result == ESP_OK) {
         result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+static esp_err_t app_js_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/app.js");
+    }
+    esp_err_t result = httpd_resp_set_type(
+        request, "application/javascript; charset=utf-8");
+    if (result == ESP_OK) {
+        result = set_security_headers(request);
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send(request, APP_JS, sizeof(APP_JS) - 1U);
     }
     return result;
 }
@@ -818,14 +1099,16 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             return ESP_ERR_INVALID_SIZE;
         }
 
-        char tail[320];
+        char tail[448];
         const int length = snprintf(
             tail, sizeof(tail),
             "\",\"rssi_dbm\":%s,\"sd_mounted\":%s,\"flash_bytes\":%lu,"
             "\"uptime_s\":%lu,\"free_heap_bytes\":%lu,"
             "\"minimum_free_heap_bytes\":%lu,\"time_synchronized\":%s,"
             "\"feed_state\":\"%s\",\"feed_error\":\"%s\","
-            "\"aircraft_count\":%u,\"http_status\":%d}",
+            "\"aircraft_count\":%u,\"http_status\":%d,"
+            "\"polls_ok\":%lu,\"polls_failed\":%lu,\"tls_connections\":%lu,"
+            "\"sd_logging\":%s,\"sd_records\":%lu}",
             rssi,
             snapshot.sd_mounted ? "true" : "false",
             (unsigned long)snapshot.flash_bytes,
@@ -836,7 +1119,12 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             airtrack_feed_state_name(snapshot.aircraft.state),
             airtrack_feed_error_name(snapshot.aircraft.error),
             (unsigned)snapshot.aircraft.aircraft_count,
-            snapshot.aircraft.http_status);
+            snapshot.aircraft.http_status,
+            (unsigned long)snapshot.polls_ok,
+            (unsigned long)snapshot.polls_failed,
+            (unsigned long)snapshot.tls_connections,
+            snapshot.sd_logging_enabled ? "true" : "false",
+            (unsigned long)snapshot.sd_records_written);
         if (length < 0 || (size_t)length >= sizeof(tail)) {
             return ESP_ERR_INVALID_SIZE;
         }
@@ -1112,16 +1400,28 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
         result = set_security_headers(request);
     }
     if (result == ESP_OK) {
-        char head[192];
+        char head[320];
+        char last_success[24];
+        if (snapshot.aircraft.last_success_monotonic_ms > 0) {
+            (void)snprintf(last_success, sizeof(last_success), "%.0f",
+                           seconds_since_success(&snapshot));
+        } else {
+            memcpy(last_success, "null", sizeof("null"));
+        }
         const int length = snprintf(
             head, sizeof(head),
             "{\"state\":\"%s\",\"error\":\"%s\",\"sequence\":%llu,"
-            "\"reported\":%lu,\"accepted\":%lu,\"aircraft\":[",
+            "\"reported\":%lu,\"accepted\":%lu,\"radius_nm\":%u,"
+            "\"unit\":\"%s\",\"last_success_age_s\":%s,"
+            "\"http_status\":%d,\"aircraft\":[",
             airtrack_feed_state_name(snapshot.aircraft.state),
             airtrack_feed_error_name(snapshot.aircraft.error),
             (unsigned long long)snapshot.aircraft.sequence,
             (unsigned long)snapshot.aircraft.aircraft_reported,
-            (unsigned long)snapshot.aircraft.aircraft_accepted);
+            (unsigned long)snapshot.aircraft.aircraft_accepted,
+            (unsigned)snapshot.settings.radius_nm,
+            distance_suffix(snapshot.settings.distance_unit),
+            last_success, snapshot.aircraft.http_status);
         result = (length < 0 || (size_t)length >= sizeof(head))
                      ? ESP_ERR_INVALID_SIZE
                      : httpd_resp_send_chunk(request, head, (size_t)length);
@@ -1151,16 +1451,37 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             result = send_json_escaped(request, aircraft->registration);
         }
         if (result == ESP_OK) {
-            char numeric[384];
+            result = send_html_chunk(request, "\",\"squawk\":\"");
+        }
+        if (result == ESP_OK) {
+            result = send_json_escaped(request, aircraft->squawk);
+        }
+        if (result == ESP_OK) {
+            result = send_html_chunk(request, "\",\"category\":\"");
+        }
+        if (result == ESP_OK) {
+            result = send_json_escaped(request, aircraft->category);
+        }
+        if (result == ESP_OK) {
+            result = send_html_chunk(request, "\",\"type\":\"");
+        }
+        if (result == ESP_OK) {
+            result = send_json_escaped(request, aircraft->aircraft_type);
+        }
+        if (result == ESP_OK) {
+            char numeric[448];
             const int length = snprintf(
                 numeric, sizeof(numeric),
-                "\",\"type\":\"%s\",\"ground\":%s,\"altitude_ft\":%ld,"
+                "\",\"emergency\":%s,"
+                "\"ground\":%s,\"altitude_ft\":%ld,"
                 "\"altitude_valid\":%s,\"distance_nm\":%.3f,"
                 "\"bearing_deg\":%.1f,\"ground_speed_kt\":%.1f,"
                 "\"speed_valid\":%s,\"track_deg\":%.1f,"
                 "\"track_valid\":%s,\"vertical_rate_fpm\":%ld,"
-                "\"vertical_rate_valid\":%s,\"seen_pos_s\":%.2f}",
-                aircraft->aircraft_type, aircraft->ground ? "true" : "false",
+                "\"vertical_rate_valid\":%s,\"seen_pos_s\":%.2f,"
+                "\"age_s\":%.1f}",
+                aircraft->emergency ? "true" : "false",
+                aircraft->ground ? "true" : "false",
                 (long)aircraft->altitude_ft,
                 aircraft->altitude_valid ? "true" : "false",
                 (double)aircraft->distance_nm, (double)aircraft->bearing_deg,
@@ -1170,6 +1491,7 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
                 aircraft->track_valid ? "true" : "false",
                 (long)aircraft->vertical_rate_fpm,
                 aircraft->vertical_rate_valid ? "true" : "false",
+                (double)aircraft->seen_pos_s,
                 current_position_age_s(&snapshot, aircraft));
             result = (length < 0 || (size_t)length >= sizeof(numeric))
                          ? ESP_ERR_INVALID_SIZE
@@ -1239,6 +1561,12 @@ static const httpd_uri_t URI_FAVICON = {
     .handler = favicon_handler,
 };
 
+static const httpd_uri_t URI_APP_JS = {
+    .uri = "/app.js",
+    .method = HTTP_GET,
+    .handler = app_js_handler,
+};
+
 esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
                            status_web_save_location_cb_t save_location,
                            void *user_context)
@@ -1267,9 +1595,9 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
     make_csrf_token();
 
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
-    server_config.stack_size = 5120U;
+    server_config.stack_size = 6144U;
     server_config.max_open_sockets = 3U;
-    server_config.max_uri_handlers = 6U;
+    server_config.max_uri_handlers = 8U;
     server_config.lru_purge_enable = true;
     server_config.recv_wait_timeout = 5U;
     server_config.send_wait_timeout = 5U;
@@ -1292,6 +1620,7 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_AIRCRAFT,
         &URI_LOCATION,
         &URI_FAVICON,
+        &URI_APP_JS,
     };
     for (size_t index = 0U; index < sizeof(handlers) / sizeof(handlers[0]);
          ++index) {

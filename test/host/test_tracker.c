@@ -145,6 +145,33 @@ static void test_malformed_rejected(void)
     airtrack_stream_parser_destroy(parser);
 }
 
+static void test_squawk_and_emergency(void)
+{
+    static const char response[] =
+        "{\"ac\":[{\"hex\":\"abc123\",\"lat\":37.63,\"lon\":-122.38,"
+        "\"seen_pos\":0.5,\"squawk\":\"7700\",\"emergency\":\"general\","
+        "\"category\":\"A3\",\"alt_baro\":2000},"
+        "{\"hex\":\"def456\",\"lat\":37.70,\"lon\":-122.38,"
+        "\"seen_pos\":0.5,\"squawk\":\"1200\",\"emergency\":\"none\"}]}";
+    airtrack_snapshot_t snapshot;
+    for (size_t chunk = 1U; chunk <= 7U; chunk += 3U) {
+        assert(parse_chunks(response, chunk, false, &snapshot) == ESP_OK);
+        assert(snapshot.aircraft_count == 2U);
+        assert(strcmp(snapshot.aircraft[0].hex, "ABC123") == 0);
+        assert(strcmp(snapshot.aircraft[0].squawk, "7700") == 0);
+        assert(strcmp(snapshot.aircraft[0].category, "A3") == 0);
+        assert(snapshot.aircraft[0].emergency);
+        assert(strcmp(snapshot.aircraft[1].squawk, "1200") == 0);
+        assert(!snapshot.aircraft[1].emergency);
+        assert(snapshot.aircraft[1].category[0] == '\0');
+    }
+    /* A duplicated consumed key still invalidates the whole poll. */
+    assert(parse_chunks(
+               "{\"ac\":[{\"hex\":\"abc123\",\"lat\":1,\"lon\":1,"
+               "\"seen_pos\":1,\"squawk\":\"1\",\"squawk\":\"2\"}]}",
+               3U, false, &snapshot) != ESP_OK);
+}
+
 static void test_target_hysteresis(void)
 {
     airtrack_snapshot_t previous = {.aircraft_count = 1U};
@@ -226,6 +253,7 @@ int main(int argc, char **argv)
     test_geometry_and_empty();
     test_malformed_rejected();
     test_target_hysteresis();
+    test_squawk_and_emergency();
     puts("tracker host tests: PASS");
     return 0;
 }

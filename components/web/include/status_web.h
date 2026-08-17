@@ -26,11 +26,16 @@ typedef struct {
     bool rssi_available;
     int8_t rssi_dbm;
     bool sd_mounted;
+    bool sd_logging_enabled;
+    uint32_t sd_records_written;
     uint32_t flash_bytes;
     uint32_t uptime_s;
     uint32_t free_heap_bytes;
     uint32_t minimum_free_heap_bytes;
     bool time_synchronized;
+    uint32_t polls_ok;
+    uint32_t polls_failed;
+    uint32_t tls_connections;
     const airtrack_settings_t *settings;
     const airtrack_snapshot_t *aircraft;
 } status_web_snapshot_t;

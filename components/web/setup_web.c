@@ -14,7 +14,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 
-#define SETUP_WEB_MAX_FORM_BYTES 640U
+#define SETUP_WEB_MAX_FORM_BYTES 768U
 #define SETUP_WEB_CONTENT_TYPE_MAX_BYTES 63U
 #define SETUP_WEB_CSRF_RANDOM_BYTES 16U
 #define SETUP_WEB_CSRF_TOKEN_BYTES (SETUP_WEB_CSRF_RANDOM_BYTES * 2U)
@@ -38,6 +38,8 @@ typedef struct {
     char csrf_token[SETUP_WEB_CSRF_TOKEN_BYTES + 1U];
     setup_web_network_t nearby_networks[SETUP_WEB_MAX_NETWORKS];
     size_t nearby_network_count;
+    char current_ssid[SETUP_WEB_SSID_MAX_BYTES + 1U];
+    airtrack_settings_t current_settings;
     setup_web_save_config_cb_t save_config;
     void *user_context;
 } setup_web_context_t;
@@ -114,6 +116,11 @@ static const char PAGE_HEAD[] =
     "font:inherit;font-weight:800;color:#05241c;background:#63e6be;cursor:pointer}"
     ".hint,footer{color:#8faab5;font-size:.78rem;line-height:1.45}"
     "footer{text-align:center;margin-top:15px}footer strong{color:#b9cbd2}"
+    "details{margin-top:18px;border-top:1px solid #28414c;padding-top:10px}"
+    "summary{cursor:pointer;color:#63e6be;font-weight:700;font-size:.9rem}"
+    ".row{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}"
+    ".check{display:flex;align-items:center;gap:10px;margin:14px 0 6px;"
+    "color:#b9cbd2;font-size:.88rem}.check input{width:auto;margin:0}"
     "</style></head><body><main><div class=eyebrow>LOCAL DEVICE SETUP</div>"
     "<h1>AirTrack</h1><p class=lead>Choose the Wi-Fi network this display "
     "should use. Setup stays entirely on this device.</p><section class=card>"
@@ -144,27 +151,45 @@ static const char PAGE_FORM_AFTER_NETWORKS[] =
     "shown beside each network. Choose one, or enter a hidden network below.</p>"
     "<label for=ssid>Wi-Fi network name <span class=manual>(editable)</span></label>"
     "<input id=ssid name=ssid type=text maxlength=32 autocomplete=off "
-    "required>"
-    "<label for=password>Wi-Fi password</label>"
+    "required value=\"";
+
+static const char PAGE_FORM_AFTER_SSID[] =
+    "\"><label for=password>Wi-Fi password</label>"
     "<input id=password name=password type=password maxlength=63 "
     "autocomplete=off>"
     "<p class=hint>Leave password blank only for an open network. Protected "
-    "networks require 8 to 63 characters.</p>"
+    "networks require 8 to 63 characters. The saved password is never shown; "
+    "re-enter it when keeping the same network.</p>"
     "<div class=eyebrow>TRACKING LOCATION</div>"
     "<p class=hint>Enter the fixed location of this display. Coordinates are "
     "used only to request nearby aircraft from adsb.fi.</p>"
     "<label for=latitude>Latitude</label>"
     "<input id=latitude name=latitude type=number step=any min=-90 max=90 "
-    "placeholder=37.6213 required>"
-    "<label for=longitude>Longitude</label>"
+    "placeholder=37.6213 required";
+
+static const char PAGE_FORM_AFTER_LATITUDE[] =
+    "><label for=longitude>Longitude</label>"
     "<input id=longitude name=longitude type=number step=any min=-180 max=180 "
-    "placeholder=-122.3790 required>"
-    "<label for=radius>Search radius (nautical miles)</label>"
-    "<input id=radius name=radius type=number min=1 max=250 value=25 required>"
-    "<button type=submit>Save and connect</button></form>"
+    "placeholder=-122.3790 required";
+
+static const char PAGE_FORM_AFTER_LONGITUDE[] =
+    "><label for=radius>Search radius (nautical miles)</label>"
+    "<input id=radius name=radius type=number min=1 max=250 required value=";
+
+/* Advanced options are rendered with printf-style placeholders resolved by
+ * send_options_section(); every value is a bounded integer or enum. */
+static const char PAGE_FORM_OPTIONS_HEAD[] =
+    "><details class=opts><summary>Display &amp; feed options</summary>"
+    "<label for=units>Distance units</label><select id=units name=units>";
+
+static const char PAGE_FORM_OPTIONS_TAIL[] =
+    "<p class=hint>Ground aircraft are excluded by default so parked traffic "
+    "at a nearby airport does not hide the closest airborne target. SD "
+    "logging writes NDJSON to /airtrack/logs when a FAT32 card is present.</p>"
+    "</details><button type=submit>Save and connect</button></form>"
     "<script>const network=document.getElementById('nearby'),ssid=document."
     "getElementById('ssid');network.onchange=function(){if(network.value){ssid."
-    "value=network.value;ssid.focus()}};</script>"
+    "value=network.value;document.getElementById('password').focus()}};</script>"
     "<footer><strong>Data: adsb.fi</strong><br>Not for navigation or "
     "collision avoidance.</footer></main></body></html>";
 
@@ -189,7 +214,7 @@ static esp_err_t set_response_headers(httpd_req_t *request)
         result = httpd_resp_set_hdr(
             request, "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-            "script-src 'sha256-oSWHFgqz51TJK1Wrsh1Fj27BpH0Iizzy+38CgOB9rzw='; "
+            "script-src 'sha256-p03dkctonOn5oiXvbj25/fkDhwK/+K/B6mlySHggnc4='; "
             "base-uri 'none'; frame-ancestors 'none'");
     }
     return result;
@@ -336,6 +361,119 @@ static esp_err_t send_network_option(httpd_req_t *request,
     return result;
 }
 
+static esp_err_t send_select_option(httpd_req_t *request, const char *value,
+                                    const char *label, bool selected)
+{
+    esp_err_t result = send_html_chunk(request, "<option value=");
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, value);
+    }
+    if (result == ESP_OK && selected) {
+        result = send_html_chunk(request, " selected");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, ">");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, label);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</option>");
+    }
+    return result;
+}
+
+static esp_err_t send_options_section(httpd_req_t *request)
+{
+    const airtrack_settings_t *settings = &s_web.current_settings;
+    esp_err_t result = send_html_chunk(request, PAGE_FORM_OPTIONS_HEAD);
+    if (result == ESP_OK) {
+        result = send_select_option(request, "nm", "Nautical miles",
+            settings->distance_unit == AIRTRACK_DISTANCE_NM);
+    }
+    if (result == ESP_OK) {
+        result = send_select_option(request, "km", "Kilometres",
+            settings->distance_unit == AIRTRACK_DISTANCE_KM);
+    }
+    if (result == ESP_OK) {
+        result = send_select_option(request, "mi", "Statute miles",
+            settings->distance_unit == AIRTRACK_DISTANCE_MI);
+    }
+    if (result == ESP_OK) {
+        char numeric[512];
+        const int length = snprintf(numeric, sizeof(numeric),
+            "</select><div class=row><div><label for=poll>Poll interval (s)"
+            "</label><input id=poll name=poll type=number min=2 max=300 "
+            "value=%u></div><div><label for=brightness>Brightness (%%)</label>"
+            "<input id=brightness name=brightness type=number min=0 max=50 "
+            "value=%u></div></div>"
+            "<label class=check><input type=checkbox name=ground value=1%s>"
+            "Include aircraft on the ground</label>"
+            "<label for=logging>SD card logging</label>"
+            "<select id=logging name=logging>",
+            (unsigned)settings->poll_interval_s,
+            (unsigned)settings->brightness_percent,
+            settings->include_ground ? " checked" : "");
+        result = (length < 0 || (size_t)length >= sizeof(numeric))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, numeric, (size_t)length);
+    }
+    if (result == ESP_OK) {
+        result = send_select_option(request, "0", "Off",
+            settings->logging_mode == AIRTRACK_LOGGING_OFF);
+    }
+    if (result == ESP_OK) {
+        result = send_select_option(request, "1", "Target changes",
+            settings->logging_mode == AIRTRACK_LOGGING_TARGET_CHANGES);
+    }
+    if (result == ESP_OK) {
+        result = send_select_option(request, "2", "Target changes + heartbeat",
+            settings->logging_mode == AIRTRACK_LOGGING_PERIODIC);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</select>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FORM_OPTIONS_TAIL);
+    }
+    return result;
+}
+
+static esp_err_t send_location_fields(httpd_req_t *request)
+{
+    const airtrack_settings_t *settings = &s_web.current_settings;
+    char text[48];
+    esp_err_t result = ESP_OK;
+    if (settings->location_configured) {
+        const int length = snprintf(text, sizeof(text), " value=%.6f",
+            (double)settings->latitude_e7 / 10000000.0);
+        result = (length < 0 || (size_t)length >= sizeof(text))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, text, (size_t)length);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FORM_AFTER_LATITUDE);
+    }
+    if (result == ESP_OK && settings->location_configured) {
+        const int length = snprintf(text, sizeof(text), " value=%.6f",
+            (double)settings->longitude_e7 / 10000000.0);
+        result = (length < 0 || (size_t)length >= sizeof(text))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, text, (size_t)length);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FORM_AFTER_LONGITUDE);
+    }
+    if (result == ESP_OK) {
+        const int length = snprintf(text, sizeof(text), "%u",
+                                    (unsigned)settings->radius_nm);
+        result = (length < 0 || (size_t)length >= sizeof(text))
+                     ? ESP_ERR_INVALID_SIZE
+                     : httpd_resp_send_chunk(request, text, (size_t)length);
+    }
+    return result;
+}
+
 static esp_err_t setup_page_handler(httpd_req_t *request)
 {
     if (!request_has_canonical_host(request)) {
@@ -395,6 +533,18 @@ static esp_err_t setup_page_handler(httpd_req_t *request)
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_FORM_AFTER_NETWORKS);
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, s_web.current_ssid);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FORM_AFTER_SSID);
+    }
+    if (result == ESP_OK) {
+        result = send_location_fields(request);
+    }
+    if (result == ESP_OK) {
+        result = send_options_section(request);
     }
     if (result == ESP_OK) {
         result = httpd_resp_send_chunk(request, NULL, 0U);
@@ -492,12 +642,23 @@ static esp_err_t decode_form_component(const char *encoded,
 
 static bool valid_utf8(const unsigned char *text, size_t length);
 
+static bool parse_bounded_ulong(const char *text, unsigned long minimum,
+                                unsigned long maximum, unsigned long *out)
+{
+    errno = 0;
+    char *end = NULL;
+    const unsigned long value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value < minimum ||
+        value > maximum) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 static esp_err_t parse_wifi_form(const char *body, size_t body_length,
-                                 char *ssid, size_t ssid_capacity,
-                                 char *password, size_t password_capacity,
-                                 char *csrf_token, size_t csrf_token_capacity,
-                                 int32_t *latitude_e7, int32_t *longitude_e7,
-                                 uint16_t *radius_nm)
+                                 setup_web_submission_t *submission,
+                                 char *csrf_token, size_t csrf_token_capacity)
 {
     if (body == NULL || body_length == 0U || body[body_length - 1U] == '&') {
         return ESP_ERR_INVALID_ARG;
@@ -509,9 +670,23 @@ static esp_err_t parse_wifi_form(const char *body, size_t body_length,
     bool have_latitude = false;
     bool have_longitude = false;
     bool have_radius = false;
+    bool have_units = false;
+    bool have_poll = false;
+    bool have_brightness = false;
+    bool have_ground = false;
+    bool have_logging = false;
     char latitude[24] = {0};
     char longitude[24] = {0};
     char radius[8] = {0};
+    char units[4] = {0};
+    char poll[8] = {0};
+    char brightness[8] = {0};
+    char ground[4] = {0};
+    char logging[4] = {0};
+    char *ssid = submission->ssid;
+    char *password = submission->password;
+    const size_t ssid_capacity = sizeof(submission->ssid);
+    const size_t password_capacity = sizeof(submission->password);
     size_t offset = 0U;
     while (offset < body_length) {
         const char *pair = body + offset;
@@ -562,6 +737,26 @@ static esp_err_t parse_wifi_form(const char *body, size_t body_length,
             result = decode_form_component(value, value_length, radius,
                                            sizeof(radius));
             have_radius = result == ESP_OK;
+        } else if (strcmp(key, "units") == 0 && !have_units) {
+            result = decode_form_component(value, value_length, units,
+                                           sizeof(units));
+            have_units = result == ESP_OK;
+        } else if (strcmp(key, "poll") == 0 && !have_poll) {
+            result = decode_form_component(value, value_length, poll,
+                                           sizeof(poll));
+            have_poll = result == ESP_OK;
+        } else if (strcmp(key, "brightness") == 0 && !have_brightness) {
+            result = decode_form_component(value, value_length, brightness,
+                                           sizeof(brightness));
+            have_brightness = result == ESP_OK;
+        } else if (strcmp(key, "ground") == 0 && !have_ground) {
+            result = decode_form_component(value, value_length, ground,
+                                           sizeof(ground));
+            have_ground = result == ESP_OK;
+        } else if (strcmp(key, "logging") == 0 && !have_logging) {
+            result = decode_form_component(value, value_length, logging,
+                                           sizeof(logging));
+            have_logging = result == ESP_OK;
         } else {
             return ESP_ERR_INVALID_ARG;
         }
@@ -589,23 +784,58 @@ static esp_err_t parse_wifi_form(const char *body, size_t body_length,
     errno = 0;
     char *latitude_end = NULL;
     char *longitude_end = NULL;
-    char *radius_end = NULL;
     const double latitude_value = strtod(latitude, &latitude_end);
     const double longitude_value = strtod(longitude, &longitude_end);
-    const unsigned long radius_value = strtoul(radius, &radius_end, 10);
+    unsigned long radius_value = 0UL;
     if (errno != 0 || latitude_end == latitude || *latitude_end != '\0' ||
         longitude_end == longitude || *longitude_end != '\0' ||
-        radius_end == radius || *radius_end != '\0' ||
+        !parse_bounded_ulong(radius, 1UL, 250UL, &radius_value) ||
         !isfinite(latitude_value) || !isfinite(longitude_value) ||
         latitude_value < -90.0 || latitude_value > 90.0 ||
-        longitude_value < -180.0 || longitude_value > 180.0 ||
-        radius_value < 1UL || radius_value > 250UL) {
+        longitude_value < -180.0 || longitude_value > 180.0) {
         return ESP_ERR_INVALID_ARG;
     }
-    *latitude_e7 = (int32_t)llround(latitude_value * 10000000.0);
-    *longitude_e7 = (int32_t)llround(longitude_value * 10000000.0);
-    *radius_nm = (uint16_t)radius_value;
-    return ESP_OK;
+    airtrack_settings_t *settings = &submission->settings;
+    settings->location_configured = true;
+    settings->latitude_e7 = (int32_t)llround(latitude_value * 10000000.0);
+    settings->longitude_e7 = (int32_t)llround(longitude_value * 10000000.0);
+    settings->radius_nm = (uint16_t)radius_value;
+
+    /* Optional advanced fields: absent keys keep the current values.  A
+     * checkbox is only posted when checked, so its presence in the form is
+     * signalled by the units field, which is always posted with it. */
+    if (have_units) {
+        if (strcmp(units, "nm") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_NM;
+        } else if (strcmp(units, "km") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_KM;
+        } else if (strcmp(units, "mi") == 0) {
+            settings->distance_unit = AIRTRACK_DISTANCE_MI;
+        } else {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->include_ground = have_ground && strcmp(ground, "1") == 0;
+    }
+    unsigned long numeric = 0UL;
+    if (have_poll) {
+        if (!parse_bounded_ulong(poll, 2UL, 300UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->poll_interval_s = (uint16_t)numeric;
+    }
+    if (have_brightness) {
+        if (!parse_bounded_ulong(brightness, 0UL, 50UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->brightness_percent = (uint8_t)numeric;
+    }
+    if (have_logging) {
+        if (!parse_bounded_ulong(logging, 0UL, 2UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->logging_mode = (airtrack_logging_mode_t)numeric;
+    }
+    return airtrack_settings_validate(settings);
 }
 
 static bool has_form_content_type(httpd_req_t *request)
@@ -679,19 +909,16 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
     }
     body[received] = '\0';
 
-    char ssid[SETUP_WEB_SSID_MAX_BYTES + 1U] = {0};
-    char password[SETUP_WEB_PASSWORD_MAX_BYTES + 1U] = {0};
+    setup_web_submission_t submission;
+    memset(&submission, 0, sizeof(submission));
+    submission.settings = s_web.current_settings;
     char csrf_token[SETUP_WEB_CSRF_TOKEN_BYTES + 1U] = {0};
-    int32_t latitude_e7 = 0;
-    int32_t longitude_e7 = 0;
-    uint16_t radius_nm = 0U;
     const esp_err_t parse_result =
-        parse_wifi_form(body, received, ssid, sizeof(ssid), password,
-                        sizeof(password), csrf_token, sizeof(csrf_token),
-                        &latitude_e7, &longitude_e7, &radius_nm);
+        parse_wifi_form(body, received, &submission, csrf_token,
+                        sizeof(csrf_token));
     if (parse_result != ESP_OK) {
         clear_sensitive_buffer(csrf_token, sizeof(csrf_token));
-        clear_sensitive_buffer(password, sizeof(password));
+        clear_sensitive_buffer(&submission, sizeof(submission));
         clear_sensitive_buffer(body, sizeof(body));
         return send_result_page(
             request, "400 Bad Request", "Check these settings",
@@ -701,7 +928,7 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
 
     if (!csrf_token_matches(csrf_token)) {
         clear_sensitive_buffer(csrf_token, sizeof(csrf_token));
-        clear_sensitive_buffer(password, sizeof(password));
+        clear_sensitive_buffer(&submission, sizeof(submission));
         clear_sensitive_buffer(body, sizeof(body));
         return send_result_page(
             request, "403 Forbidden", "Setup session expired",
@@ -709,10 +936,9 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
     }
 
     const esp_err_t save_result =
-        s_web.save_config(ssid, password, latitude_e7, longitude_e7,
-                          radius_nm, s_web.user_context);
+        s_web.save_config(&submission, s_web.user_context);
     clear_sensitive_buffer(csrf_token, sizeof(csrf_token));
-    clear_sensitive_buffer(password, sizeof(password));
+    clear_sensitive_buffer(&submission, sizeof(submission));
     clear_sensitive_buffer(body, sizeof(body));
     if (save_result != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi settings callback returned %s",
@@ -888,6 +1114,11 @@ static bool valid_nearby_network_array(const setup_web_config_t *config)
 esp_err_t setup_web_start(const setup_web_config_t *config)
 {
     if (config == NULL || config->save_config == NULL ||
+        config->current_settings == NULL ||
+        airtrack_settings_validate(config->current_settings) != ESP_OK ||
+        (config->current_ssid != NULL &&
+         !valid_display_value(config->current_ssid, SETUP_WEB_SSID_MAX_BYTES,
+                              true)) ||
         !valid_display_value(config->ap_ssid, SETUP_WEB_SSID_MAX_BYTES, false) ||
         !valid_display_value(config->ap_password,
                              SETUP_WEB_PASSWORD_MAX_BYTES, false) ||
@@ -932,6 +1163,11 @@ esp_err_t setup_web_start(const setup_web_config_t *config)
         network->rssi = config->nearby_networks[index].rssi;
         network->secured = config->nearby_networks[index].secured;
         ++s_web.nearby_network_count;
+    }
+    s_web.current_settings = *config->current_settings;
+    if (config->current_ssid != NULL) {
+        copy_config_value(s_web.current_ssid, sizeof(s_web.current_ssid),
+                          config->current_ssid);
     }
     s_web.save_config = config->save_config;
     s_web.user_context = config->user_context;

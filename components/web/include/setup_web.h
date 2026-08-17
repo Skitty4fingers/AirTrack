@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "airtrack_config.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -21,12 +22,22 @@ typedef struct {
     bool secured;
 } setup_web_network_t;
 
-typedef esp_err_t (*setup_web_save_config_cb_t)(const char *ssid,
-                                                const char *password,
-                                                int32_t latitude_e7,
-                                                int32_t longitude_e7,
-                                                uint16_t radius_nm,
-                                                void *user_context);
+/**
+ * A validated setup-form submission.
+ *
+ * Wi-Fi fields are always present.  Every tracker/display value starts from
+ * the settings supplied in setup_web_config_t::current_settings and is
+ * overwritten only by the fields the browser actually posted, so an older
+ * form or a partially filled advanced section never resets other settings.
+ */
+typedef struct {
+    char ssid[SETUP_WEB_SSID_MAX_BYTES + 1U];
+    char password[SETUP_WEB_PASSWORD_MAX_BYTES + 1U];
+    airtrack_settings_t settings;
+} setup_web_submission_t;
+
+typedef esp_err_t (*setup_web_save_config_cb_t)(
+    const setup_web_submission_t *submission, void *user_context);
 
 typedef struct {
     /* Values shown to the user for joining the device's setup hotspot. */
@@ -38,6 +49,15 @@ typedef struct {
      * order supplied. Hidden networks can still be entered manually. */
     const setup_web_network_t *nearby_networks;
     size_t nearby_network_count;
+
+    /* Optional: the currently saved station SSID, pre-filled in the form.
+     * The station password is never supplied or shown. */
+    const char *current_ssid;
+
+    /* Required: the effective tracker settings.  Location, radius, units,
+     * brightness, poll interval, ground filter, and logging mode are
+     * pre-filled from here and used as the base for the submission. */
+    const airtrack_settings_t *current_settings;
 
     /* Called after POST input is decoded and validated. */
     setup_web_save_config_cb_t save_config;
