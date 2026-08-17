@@ -58,6 +58,14 @@ typedef struct {
     char category[3];
     /* True when the transponder reports any emergency other than "none". */
     bool emergency;
+    /* Route enrichment (adsbdb.com), filled by the ADS-B client when known.
+     * Codes are IATA when available, otherwise ICAO. */
+    bool route_valid;
+    char route_from[5];
+    char route_to[5];
+    bool destination_valid;
+    double destination_latitude;
+    double destination_longitude;
 } airtrack_aircraft_t;
 
 typedef struct {
@@ -86,6 +94,14 @@ esp_err_t airtrack_stream_parser_feed(airtrack_stream_parser_t *parser,
 esp_err_t airtrack_stream_parser_finish(airtrack_stream_parser_t *parser,
                                         airtrack_snapshot_t *snapshot);
 void airtrack_stream_parser_destroy(airtrack_stream_parser_t *parser);
+
+/** True when the aircraft's callsign, registration, or hex equals focus (case-insensitive). */
+bool airtrack_aircraft_matches(const airtrack_aircraft_t *aircraft, const char *focus);
+
+/** Great-circle distance in NM and initial bearing in degrees. */
+void airtrack_geometry(double origin_latitude, double origin_longitude,
+                       double latitude, double longitude,
+                       float *distance_nm, float *bearing_deg);
 
 /** Replace candidate[0] with the stable target when switch confirmation applies. */
 void airtrack_apply_target_hysteresis(const airtrack_snapshot_t *previous,

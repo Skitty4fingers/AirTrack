@@ -11,6 +11,8 @@ extern "C" {
 
 #define AIRTRACK_AP_PASSWORD_LENGTH 8U
 #define AIRTRACK_HOSTNAME_MAX_LENGTH 24U
+/* Callsign, registration, or ICAO hex of a single flight to follow. */
+#define AIRTRACK_FOCUS_MAX_LENGTH 8U
 
 typedef enum {
     AIRTRACK_DISTANCE_NM = 0,
@@ -40,6 +42,9 @@ typedef struct {
     uint16_t retention_days;
     uint16_t retention_mib;
     char hostname[AIRTRACK_HOSTNAME_MAX_LENGTH + 1U];
+    /* Empty: track the nearest aircraft.  Otherwise only this flight
+     * (matched against callsign, registration, or hex, case-insensitive). */
+    char focus_flight[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
 } airtrack_settings_t;
 
 typedef struct {

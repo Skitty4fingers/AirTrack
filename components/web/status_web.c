@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -10,6 +11,7 @@
 #include <strings.h>
 
 #include "esp_app_desc.h"
+#include "storage_logger.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -35,6 +37,9 @@ typedef struct {
     bool sd_mounted;
     bool sd_logging_enabled;
     uint32_t sd_records_written;
+    uint64_t sd_log_bytes;
+    uint32_t sd_log_files;
+    uint32_t sd_files_pruned;
     uint32_t flash_bytes;
     uint32_t uptime_s;
     uint32_t free_heap_bytes;
@@ -311,6 +316,9 @@ static esp_err_t normalize_snapshot(
     destination->sd_mounted = source->sd_mounted;
     destination->sd_logging_enabled = source->sd_logging_enabled;
     destination->sd_records_written = source->sd_records_written;
+    destination->sd_log_bytes = source->sd_log_bytes;
+    destination->sd_log_files = source->sd_log_files;
+    destination->sd_files_pruned = source->sd_files_pruned;
     destination->flash_bytes = source->flash_bytes;
     destination->uptime_s = source->uptime_s;
     destination->free_heap_bytes = source->free_heap_bytes;
@@ -696,6 +704,23 @@ static const char *api_text(airtrack_feed_state_t state)
     }
 }
 
+/* Distance to the known destination (NM) and ETA seconds (-1 if unknown). */
+static long route_remaining(const airtrack_aircraft_t *aircraft, float *remaining_nm)
+{
+    *remaining_nm = -1.0f;
+    if (!aircraft->destination_valid) {
+        return -1;
+    }
+    float bearing;
+    airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                      aircraft->destination_latitude,
+                      aircraft->destination_longitude, remaining_nm, &bearing);
+    if (aircraft->ground_speed_valid && aircraft->ground_speed_kt >= 60.0f) {
+        return (long)(*remaining_nm / aircraft->ground_speed_kt * 3600.0f);
+    }
+    return -1;
+}
+
 static esp_err_t send_chunk_or_size(httpd_req_t *request, const char *text,
                                     int length, size_t capacity)
 {
@@ -717,6 +742,17 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
         result = send_html_chunk(request,
             "<div class=banner>Enter this display's fixed location under "
             "<b>Location</b> and save to start tracking.</div>");
+    } else if (snapshot->settings.focus_flight[0] != '\0') {
+        result = send_html_chunk(request,
+            "<div class=banner>Following <b>");
+        if (result == ESP_OK) {
+            result = send_html_escaped(request, snapshot->settings.focus_flight);
+        }
+        if (result == ESP_OK) {
+            result = send_html_chunk(request,
+                "</b> only. Clear <b>Track a single flight</b> under Location "
+                "to return to the nearest aircraft.</div>");
+        }
     }
 
     /* Empty-state block. */
@@ -795,6 +831,24 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
     if (result == ESP_OK) {
         char altitude[64];
         char speed[48];
+        char route_text[96] = "";
+        if (have_target && aircraft->route_valid) {
+            float remaining_nm = -1.0f;
+            long eta_s = route_remaining(aircraft, &remaining_nm);
+            int used = snprintf(route_text, sizeof(route_text), "%s &rarr; %s",
+                                aircraft->route_from, aircraft->route_to);
+            if (used > 0 && remaining_nm >= 0.0f) {
+                used += snprintf(route_text + used, sizeof(route_text) - (size_t)used,
+                                 " &middot; %.0f %s to go",
+                                 (double)display_distance(remaining_nm,
+                                     snapshot->settings.distance_unit),
+                                 distance_suffix(snapshot->settings.distance_unit));
+            }
+            if (used > 0 && eta_s >= 0) {
+                (void)snprintf(route_text + used, sizeof(route_text) - (size_t)used,
+                               " &middot; ETA %ld:%02ld", eta_s / 3600, (eta_s % 3600) / 60);
+            }
+        }
         if (!have_target) {
             memcpy(altitude, "--", sizeof("--"));
             memcpy(speed, "--", sizeof("--"));
@@ -834,13 +888,16 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
             text, sizeof(text),
             "</div><ul class=facts><li>" ICON_NAV "<span id=brg>%.1f %s &middot; %s &middot; %03.0f&deg;</span></li>"
             "<li>" ICON_MTN "<span id=alt>%s</span></li>"
-            "<li>" ICON_GAUGE "<span id=spd>%s</span></li>",
+            "<li>" ICON_GAUGE "<span id=spd>%s</span></li>"
+            "<li id=routerow%s>" ICON_PLANE "<span id=route>%s</span></li>",
             have_target ? (double)display_distance(
                 aircraft->distance_nm, snapshot->settings.distance_unit) : 0.0,
             distance_suffix(snapshot->settings.distance_unit),
             have_target ? cardinal_name(aircraft->bearing_deg) : "--",
             have_target ? (double)aircraft->bearing_deg : 0.0,
-            altitude, speed);
+            altitude, speed,
+            have_target && aircraft->route_valid ? "" : " hidden",
+            route_text);
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
     if (result == ESP_OK) {
@@ -895,7 +952,7 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
                                      const status_web_snapshot_storage_t *snapshot)
 {
     const airtrack_settings_t *settings = &snapshot->settings;
-    char text[1280];
+    char text[2048];
 
     /* Left column continues: display card. */
     int length = snprintf(
@@ -942,16 +999,27 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
             "min=-90 max=90 placeholder=37.62131 required value=\"%s\"></label>"
             "<label class=field>Longitude<input name=longitude type=number step=any "
             "min=-180 max=180 placeholder=-122.37896 required value=\"%s\"></label>"
-            "</div><p class=hint>Fixed decimal-degree position of this display; "
-            "used only to request nearby traffic from adsb.fi.</p></section>"
+            "</div><div class=geo><button type=button id=geo class=ghost>" ICON_PIN
+            "Use my location</button><input id=paste type=text placeholder="
+            "\"or paste \u201947.35, -121.98\u2019 / a maps link\"></div>"
+            "<p class=hint id=geohint>Fixed decimal-degree position of this display; "
+            "used only to request nearby traffic from adsb.fi. Browsers share "
+            "location only over HTTPS, so on this local page the button may be "
+            "refused &mdash; paste coordinates instead.</p>"
+            "<h3>Track a single flight</h3>"
+            "<input name=focus type=text maxlength=8 placeholder=\"e.g. UAL205, N37267 or A280A4 (blank = nearest)\" value=\"%s\">"
+            "<p class=hint>When set, only that callsign, registration, or hex is "
+            "shown, with its route, distance to go, and an ETA estimated from "
+            "ground speed. Scheduled times need a paid flight-schedule API and are "
+            "not available.</p></section>"
             "<section class=card><h2>Search radius</h2><div class=range-row>"
             "<input type=range id=rad min=1 max=250 value=%u>"
             "<input type=number id=radn name=radius min=1 max=250 value=%u required>"
             "<span>NM</span></div><div class=ticks><span>1</span><span>50</span>"
             "<span>100</span><span>150</span><span>200</span><span>250</span></div>"
             "</section>",
-            latitude, longitude, (unsigned)settings->radius_nm,
-            (unsigned)settings->radius_nm);
+            latitude, longitude, settings->focus_flight,
+            (unsigned)settings->radius_nm, (unsigned)settings->radius_nm);
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
     if (result == ESP_OK) {
@@ -991,6 +1059,14 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
     }
     if (result == ESP_OK) {
         const bool logging = settings->logging_mode != AIRTRACK_LOGGING_OFF;
+        char log_usage[96];
+        (void)snprintf(log_usage, sizeof(log_usage),
+                       "Using %.1f MiB in %lu file%s of the %u MiB cap &middot; %lu pruned",
+                       (double)snapshot->sd_log_bytes / (1024.0 * 1024.0),
+                       (unsigned long)snapshot->sd_log_files,
+                       snapshot->sd_log_files == 1U ? "" : "s",
+                       (unsigned)settings->retention_mib,
+                       (unsigned long)snapshot->sd_files_pruned);
         length = snprintf(
             text, sizeof(text),
             "</select><p class=hint>How often adsb.fi is polled. Their public "
@@ -998,15 +1074,31 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
             "<section class=card id=storage><div class=row><div><h2>SD sighting log</h2>"
             "<p class=sub id=sdsub>%s</p></div><label class=switch>"
             "<input type=checkbox name=logging value=1%s><i></i></label></div>"
-            "<p class=hint>Appends NDJSON records of target changes to "
-            "/airtrack/logs on a FAT32 card. Nothing is written when logging is off.</p>"
-            "</section>"
+            "<p class=hint>Every distinct aircraft that enters the tracked set is "
+            "written once per 30 minutes as NDJSON under /airtrack/logs on a FAT32 "
+            "card. Nothing is written when logging is off.</p>"
+            "<div class=two><label class=field>Size cap (MiB)"
+            "<input name=retention type=number min=8 max=4096 value=%u></label>"
+            "<label class=field>Keep days<input type=number value=%u disabled></label></div>"
+            "<p class=hint id=logusage>%s</p>"
+            "<div id=logs class=logs><div class=logbar><b>Log files</b>"
+            "<button type=button id=logrefresh class=ghost>Refresh</button></div>"
+            "<div id=loglist class=loglist>Loading&hellip;</div>"
+            "<div id=logview hidden><div class=logbar><b id=logname></b>"
+            "<a id=logdl class=ghost download>Download</a></div>"
+            "<div class=tbl><table><thead><tr><th>Time (UTC)</th><th>Event</th>"
+            "<th>Flight</th><th>Reg</th><th>Type</th><th>Route</th><th>Dist</th>"
+            "<th>Alt</th><th>Speed</th></tr></thead><tbody id=logrows></tbody></table>"
+            "</div></div></div></section>"
             "<div class=\"card actions\"><span id=toast class=toast></span>"
             "<button type=submit>" ICON_SAVE "Save changes</button></div>"
             "</div></div></form>",
             !snapshot->sd_mounted ? "No SD card detected"
             : logging ? "Enabled" : "Disabled &middot; card ready",
-            logging ? " checked" : "");
+            logging ? " checked" : "",
+            (unsigned)settings->retention_mib,
+            (unsigned)settings->retention_days,
+            log_usage);
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
     return result;
@@ -1239,7 +1331,7 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             return ESP_ERR_INVALID_SIZE;
         }
 
-        char tail[448];
+        char tail[560];
         const int length = snprintf(
             tail, sizeof(tail),
             "\",\"rssi_dbm\":%s,\"sd_mounted\":%s,\"flash_bytes\":%lu,"
@@ -1248,7 +1340,8 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             "\"feed_state\":\"%s\",\"feed_error\":\"%s\","
             "\"aircraft_count\":%u,\"http_status\":%d,"
             "\"polls_ok\":%lu,\"polls_failed\":%lu,\"tls_connections\":%lu,"
-            "\"sd_logging\":%s,\"sd_records\":%lu}",
+            "\"sd_logging\":%s,\"sd_records\":%lu,\"sd_log_bytes\":%llu,"
+            "\"sd_log_files\":%lu,\"sd_files_pruned\":%lu}",
             rssi,
             snapshot.sd_mounted ? "true" : "false",
             (unsigned long)snapshot.flash_bytes,
@@ -1264,7 +1357,10 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             (unsigned long)snapshot.polls_failed,
             (unsigned long)snapshot.tls_connections,
             snapshot.sd_logging_enabled ? "true" : "false",
-            (unsigned long)snapshot.sd_records_written);
+            (unsigned long)snapshot.sd_records_written,
+            (unsigned long long)snapshot.sd_log_bytes,
+            (unsigned long)snapshot.sd_log_files,
+            (unsigned long)snapshot.sd_files_pruned);
         if (length < 0 || (size_t)length >= sizeof(tail)) {
             return ESP_ERR_INVALID_SIZE;
         }
@@ -1407,6 +1503,8 @@ typedef struct {
     bool have_poll;
     bool have_brightness;
     bool have_units;
+    bool have_focus;
+    bool have_retention;
     bool airborne;
     bool logging;
     char latitude[24];
@@ -1415,6 +1513,8 @@ typedef struct {
     char poll[8];
     char brightness[8];
     char units[4];
+    char focus[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
+    char retention[8];
 } settings_form_t;
 
 /*
@@ -1461,6 +1561,8 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("poll", form->poll, have_poll)
         FIELD("brightness", form->brightness, have_brightness)
         FIELD("units", form->units, have_units)
+        FIELD("focus", form->focus, have_focus)
+        FIELD("retention", form->retention, have_retention)
 #undef FIELD
         else if (strcmp(key, "airborne") == 0 && !form->airborne) {
             result = decode_form(encoded, encoded_length, flag, sizeof(flag));
@@ -1532,6 +1634,27 @@ static esp_err_t apply_settings_form(const settings_form_t *form,
         } else {
             return ESP_ERR_INVALID_ARG;
         }
+    }
+    if (form->have_focus) {
+        /* Upper-case, drop spaces; the validator rejects anything else. */
+        size_t used = 0U;
+        for (const char *cursor = form->focus; *cursor != '\0'; ++cursor) {
+            if (*cursor == ' ') {
+                continue;
+            }
+            if (used >= AIRTRACK_FOCUS_MAX_LENGTH) {
+                return ESP_ERR_INVALID_ARG;
+            }
+            settings->focus_flight[used++] =
+                (char)toupper((unsigned char)*cursor);
+        }
+        settings->focus_flight[used] = '\0';
+    }
+    if (form->have_retention) {
+        if (!parse_bounded_ulong(form->retention, 8UL, 4096UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->retention_mib = (uint16_t)numeric;
     }
     /* Checkboxes are absent when unchecked; the dashboard always posts the
      * complete form, so absence is an explicit "off". */
@@ -1710,7 +1833,7 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             "{\"state\":\"%s\",\"error\":\"%s\",\"sequence\":%llu,"
             "\"reported\":%lu,\"accepted\":%lu,\"radius_nm\":%u,"
             "\"unit\":\"%s\",\"last_success_age_s\":%s,"
-            "\"http_status\":%d,\"aircraft\":[",
+            "\"http_status\":%d,\"focus\":\"%s\",\"aircraft\":[",
             airtrack_feed_state_name(snapshot.aircraft.state),
             airtrack_feed_error_name(snapshot.aircraft.error),
             (unsigned long long)snapshot.aircraft.sequence,
@@ -1718,7 +1841,8 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             (unsigned long)snapshot.aircraft.aircraft_accepted,
             (unsigned)snapshot.settings.radius_nm,
             distance_suffix(snapshot.settings.distance_unit),
-            last_success, snapshot.aircraft.http_status);
+            last_success, snapshot.aircraft.http_status,
+            snapshot.settings.focus_flight);
         result = (length < 0 || (size_t)length >= sizeof(head))
                      ? ESP_ERR_INVALID_SIZE
                      : httpd_resp_send_chunk(request, head, (size_t)length);
@@ -1766,10 +1890,31 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             result = send_json_escaped(request, aircraft->aircraft_type);
         }
         if (result == ESP_OK) {
+            char route[80];
+            float remaining_nm = -1.0f;
+            const long eta_s = route_remaining(aircraft, &remaining_nm);
+            char remaining[24] = "null";
+            char eta[24] = "null";
+            if (remaining_nm >= 0.0f) {
+                (void)snprintf(remaining, sizeof(remaining), "%.1f", (double)remaining_nm);
+            }
+            if (eta_s >= 0) {
+                (void)snprintf(eta, sizeof(eta), "%ld", eta_s);
+            }
+            const int length = snprintf(
+                route, sizeof(route),
+                "\",\"route_from\":\"%s\",\"route_to\":\"%s\","
+                "\"remaining_nm\":%s,\"eta_s\":%s",
+                aircraft->route_valid ? aircraft->route_from : "",
+                aircraft->route_valid ? aircraft->route_to : "",
+                remaining, eta);
+            result = send_chunk_or_size(request, route, length, sizeof(route));
+        }
+        if (result == ESP_OK) {
             char numeric[448];
             const int length = snprintf(
                 numeric, sizeof(numeric),
-                "\",\"emergency\":%s,"
+                ",\"emergency\":%s,"
                 "\"ground\":%s,\"altitude_ft\":%ld,"
                 "\"altitude_valid\":%s,\"distance_nm\":%.3f,"
                 "\"bearing_deg\":%.1f,\"ground_speed_kt\":%.1f,"
@@ -1799,6 +1944,149 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
     if (result == ESP_OK) {
         result = send_html_chunk(request, "]}");
     }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+static esp_err_t logs_list_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/api/v1/logs");
+    }
+    storage_log_file_t files[STORAGE_LOG_MAX_LISTED];
+    size_t count = 0U;
+    uint64_t total = 0U;
+    const esp_err_t listed = storage_logger_list(files, STORAGE_LOG_MAX_LISTED,
+                                                 &count, &total);
+    esp_err_t result = httpd_resp_set_type(request, "application/json; charset=utf-8");
+    if (result == ESP_OK) {
+        result = set_security_headers(request);
+    }
+    if (result == ESP_OK) {
+        char head[96];
+        const int length = snprintf(head, sizeof(head),
+            "{\"mounted\":%s,\"total_bytes\":%llu,\"files\":[",
+            listed != ESP_ERR_NOT_FOUND ? "true" : "false",
+            (unsigned long long)total);
+        result = send_chunk_or_size(request, head, length, sizeof(head));
+    }
+    for (size_t index = 0U; result == ESP_OK && listed == ESP_OK && index < count;
+         ++index) {
+        char item[80];
+        const int length = snprintf(item, sizeof(item),
+                                    "%s{\"name\":\"%s\",\"bytes\":%lu}",
+                                    index > 0U ? "," : "", files[index].name,
+                                    (unsigned long)files[index].bytes);
+        result = send_chunk_or_size(request, item, length, sizeof(item));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "]}");
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+#define LOG_READ_CHUNK_BYTES 2048U
+#define LOG_TAIL_DEFAULT_BYTES (48U * 1024U)
+#define LOG_TAIL_MAX_BYTES (256U * 1024U)
+
+static esp_err_t log_file_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_plain_error(request, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    /* URI: /api/v1/logs/<name>[?tail=bytes][&download=1] */
+    const char *name = request->uri + sizeof("/api/v1/logs/") - 1U;
+    char clean[STORAGE_LOG_NAME_MAX_BYTES + 1U];
+    size_t name_length = 0U;
+    while (name[name_length] != '\0' && name[name_length] != '?' &&
+           name_length < sizeof(clean) - 1U) {
+        clean[name_length] = name[name_length];
+        ++name_length;
+    }
+    clean[name_length] = '\0';
+    if (!storage_logger_valid_name(clean)) {
+        return send_plain_error(request, "404 Not Found", "No such log.");
+    }
+    size_t tail = LOG_TAIL_DEFAULT_BYTES;
+    bool download = false;
+    char query[64];
+    if (httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK) {
+        char value[16];
+        if (httpd_query_key_value(query, "tail", value, sizeof(value)) == ESP_OK) {
+            unsigned long parsed = 0UL;
+            if (parse_bounded_ulong(value, 1UL, LOG_TAIL_MAX_BYTES, &parsed)) {
+                tail = (size_t)parsed;
+            }
+        }
+        if (httpd_query_key_value(query, "download", value, sizeof(value)) == ESP_OK) {
+            download = strcmp(value, "1") == 0;
+            tail = LOG_TAIL_MAX_BYTES * 16U; /* whole file, bounded below */
+        }
+    }
+    char *buffer = malloc(LOG_READ_CHUNK_BYTES);
+    if (buffer == NULL) {
+        return send_plain_error(request, "503 Service Unavailable", "Low memory.");
+    }
+    size_t read_bytes = 0U;
+    size_t file_size = 0U;
+    esp_err_t result = storage_logger_read(clean, 0U, buffer, 0U, &read_bytes,
+                                           &file_size);
+    if (result != ESP_OK) {
+        free(buffer);
+        return send_plain_error(request, result == ESP_ERR_TIMEOUT
+                                             ? "503 Service Unavailable"
+                                             : "404 Not Found",
+                                result == ESP_ERR_TIMEOUT ? "SD card busy."
+                                                          : "No such log.");
+    }
+    size_t offset = file_size > tail ? file_size - tail : 0U;
+    result = httpd_resp_set_type(request, "application/x-ndjson; charset=utf-8");
+    if (result == ESP_OK) {
+        result = set_security_headers(request);
+    }
+    if (result == ESP_OK && download) {
+        char disposition[80];
+        (void)snprintf(disposition, sizeof(disposition),
+                       "attachment; filename=\"airtrack-%s\"", clean);
+        result = httpd_resp_set_hdr(request, "Content-Disposition", disposition);
+    }
+    if (result == ESP_OK) {
+        char offset_text[16];
+        (void)snprintf(offset_text, sizeof(offset_text), "%lu", (unsigned long)offset);
+        result = httpd_resp_set_hdr(request, "X-Log-Offset", offset_text);
+    }
+    /* Skip a partial first line when tailing so every emitted line is whole. */
+    bool skip_partial = offset > 0U;
+    while (result == ESP_OK && offset < file_size) {
+        result = storage_logger_read(clean, offset, buffer, LOG_READ_CHUNK_BYTES,
+                                     &read_bytes, &file_size);
+        if (result != ESP_OK || read_bytes == 0U) {
+            break;
+        }
+        size_t start = 0U;
+        if (skip_partial) {
+            const char *newline = memchr(buffer, '\n', read_bytes);
+            if (newline == NULL) {
+                offset += read_bytes;
+                continue;
+            }
+            start = (size_t)(newline - buffer) + 1U;
+            skip_partial = false;
+        }
+        if (read_bytes > start) {
+            result = httpd_resp_send_chunk(request, buffer + start, read_bytes - start);
+        }
+        offset += read_bytes;
+    }
+    free(buffer);
     if (result == ESP_OK) {
         result = httpd_resp_send_chunk(request, NULL, 0U);
     }
@@ -1858,6 +2146,18 @@ static const httpd_uri_t URI_REBOOT = {
     .handler = reboot_handler,
 };
 
+static const httpd_uri_t URI_LOGS = {
+    .uri = "/api/v1/logs",
+    .method = HTTP_GET,
+    .handler = logs_list_handler,
+};
+
+static const httpd_uri_t URI_LOG_FILE = {
+    .uri = "/api/v1/logs/*",
+    .method = HTTP_GET,
+    .handler = log_file_handler,
+};
+
 static const httpd_uri_t URI_FAVICON = {
     .uri = "/favicon.ico",
     .method = HTTP_GET,
@@ -1906,9 +2206,10 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
     make_csrf_token();
 
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
-    server_config.stack_size = 8192U;
+    server_config.stack_size = 10240U;
     server_config.max_open_sockets = 3U;
-    server_config.max_uri_handlers = 10U;
+    server_config.max_uri_handlers = 12U;
+    server_config.uri_match_fn = httpd_uri_match_wildcard;
     server_config.lru_purge_enable = true;
     server_config.recv_wait_timeout = 5U;
     server_config.send_wait_timeout = 5U;
@@ -1932,6 +2233,8 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_AIRCRAFT,
         &URI_SETTINGS,
         &URI_REBOOT,
+        &URI_LOGS,
+        &URI_LOG_FILE,
         &URI_FAVICON,
         &URI_APP_JS,
         &URI_APP_CSS,

@@ -130,6 +130,26 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/02_live.ppm", out_dir);
     render_and_save(path);
 
+    /* With route enrichment. */
+    a->route_valid = true; strcpy(a->route_from, "SEA"); strcpy(a->route_to, "LAX");
+    a->destination_valid = true; a->destination_latitude = 33.9425; a->destination_longitude = -118.408;
+    a->latitude = 47.40; a->longitude = -121.95;
+    ui_diagnostic_show_tracking(&state);
+    snprintf(path, sizeof(path), "%s/02b_route.ppm", out_dir);
+    render_and_save(path);
+
+    /* Focused on one flight. */
+    strcpy(settings.focus_flight, "SKW4017");
+    ui_diagnostic_show_tracking(&state);
+    snprintf(path, sizeof(path), "%s/02c_focus.ppm", out_dir);
+    render_and_save(path);
+    snap.aircraft_count = 0; snap.state = AIRTRACK_FEED_EMPTY;
+    ui_diagnostic_show_tracking(&state);
+    snprintf(path, sizeof(path), "%s/02d_focus_wait.ppm", out_dir);
+    render_and_save(path);
+    snap.aircraft_count = 1; snap.state = AIRTRACK_FEED_LIVE;
+    settings.focus_flight[0] = 0; a->route_valid = false; a->destination_valid = false;
+
     /* Long callsign, descending, km, far away, stale. */
     strcpy(a->callsign, "N12345AB"); a->vertical_rate_fpm = -2432;
     a->distance_nm = 123.4f; a->bearing_deg = 247.0f;

@@ -1,4 +1,4 @@
-# AirTrack 1.2.0 release checklist
+# AirTrack 1.3.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,10 +10,15 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,737,776 bytes (both 3,904 KiB OTA
-  slots retain 57 percent free).
+- [x] Image is below the 3.5 MiB gate: 1,758,928 bytes (both 3,904 KiB OTA
+  slots retain 56 percent free).
 - [x] Artifact SHA-256:
-  `f1a772a17ee1ff30efa9cbc2c8fdded9d23d21f0154f2d67914f500ff0dbdb67`.
+  `05374d2b5da253318f5190e0016ed0adf7a53f89ff90e02d55d90b8e15524e44`.
+- [x] 1.3.0 on-target: adsbdb route lookups resolve airline callsigns (e.g.
+  SKW3363 -> LAX) and cache unknown GA registrations; focus mode set/cleared
+  from the API narrows the tracked set to one aircraft; the sighting log
+  writes `YYYY-MM-DD.ndjson` records and `/api/v1/logs` lists/tails them
+  (path traversal and NUL names rejected with 404).
 - [x] Host LCD render (`tools/host_ui_render/render.sh`) reviewed for the
   live, stale, emergency, empty, no-Wi-Fi, and both setup screens against
   `docs/ui/device-states-concept-v2.png`.
@@ -54,6 +59,10 @@ the physical device, its real fixed location, or elapsed soak time.
   selection, rejected password, and successful recovery from a phone.
 - [ ] Disconnect Internet while retaining Wi-Fi and verify stale/offline state
   without exposing the setup portal on the station LAN.
+- [ ] Confirm the accessory LED is blue while tracking and orange in setup or
+  when the feed is stale/offline.
+- [ ] Set *Track a single flight* to a nearby airliner callsign and confirm the
+  LCD switches to `WAITING FOR` / the focused view with route and ETA.
 - [ ] Power the router off for more than 60 seconds and confirm the recovery
   setup screen appears, then that tracking resumes by itself once the router
   is back (no power cycle).
@@ -63,12 +72,11 @@ the physical device, its real fixed location, or elapsed soak time.
 ## Deliberately deferred from 1.0.0
 
 - Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.2.0 updates use native USB.
+  but 1.3.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.
-- Log listing/download, retention pruning, and arbitrary hot reinsertion of an
-  SD card after boot.
+- Arbitrary hot reinsertion of an SD card after boot.
 - Flash/NVS encryption. Wi-Fi credentials are never served or logged, but are
   stored unencrypted at rest on this prototype hardware.
 

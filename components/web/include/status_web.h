@@ -28,6 +28,9 @@ typedef struct {
     bool sd_mounted;
     bool sd_logging_enabled;
     uint32_t sd_records_written;
+    uint64_t sd_log_bytes;
+    uint32_t sd_log_files;
+    uint32_t sd_files_pruned;
     uint32_t flash_bytes;
     uint32_t uptime_s;
     uint32_t free_heap_bytes;

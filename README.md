@@ -12,7 +12,32 @@ or collision-warning device.
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.2.0.
+The connected unit is running AirTrack 1.3.0.
+
+Changes in 1.3.0:
+
+- Route enrichment: for each callsign in the tracked set the ADS-B worker asks
+  `api.adsbdb.com` once (bounded 12-entry cache, one lookup per poll, unknown
+  callsigns remembered for an hour) and shows origin/destination codes beside
+  the compass on the LCD (`FROM` / `TO` columns) and in the dashboard.
+- Track a single flight: a callsign, registration, or ICAO hex under
+  *Location → Track a single flight* limits tracking to that aircraft; the LCD
+  shows `WAITING FOR <flight>` until it reports in range, then its route,
+  distance to go, and an ETA estimated from ground speed. Scheduled
+  departure/arrival times are not available from any free source; wire a paid
+  schedule API if you need on-time status.
+- Location helper: *Use my location* (browser geolocation; most browsers only
+  allow it on HTTPS, so it may be refused on the local page) and a paste box
+  that accepts `lat, lon` or a maps link with `@lat,lon`.
+- Accessory LED mirrors the display: blue while the feed is healthy, orange
+  when connecting, stale, offline, or in setup.
+- SD sighting log: every distinct aircraft entering the tracked set is written
+  once per 30 minutes (plus optional heartbeats); files are capped by the
+  configurable size limit (MiB) and retention days, oldest files pruned first;
+  the Storage card lists log files and shows the newest records inline with a
+  download link (`GET /api/v1/logs`, `GET /api/v1/logs/<name>[?tail=N|download=1]`).
+  Long FAT filenames are now enabled (they were required but off in 1.0.0).
+- Settings schema 2 (adds the focus flight); schema 1 records migrate on load.
 
 Changes in 1.2.0 (bringing the device and web UI in line with the concepts in
 `docs/ui/`):

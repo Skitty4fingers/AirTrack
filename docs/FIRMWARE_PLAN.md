@@ -338,8 +338,8 @@ for five seconds opens the isolated WPA2 setup portal for Wi-Fi changes.
 | `POST /api/v1/wifi/connect` | Stage/test credentials in AP+STA mode; return a job ID |
 | `GET /api/v1/jobs/{id}` | Report pending/testing/stable/committed/failed state |
 | `POST /api/v1/provision` | Test and commit Wi-Fi plus initial tracker settings |
-| `GET /api/v1/logs` | Deferred: list available rotated logs |
-| `GET /api/v1/logs/{name}` | Deferred: download a validated log filename |
+| `GET /api/v1/logs` | List log files (name, bytes) and total usage |
+| `GET /api/v1/logs/{name}` | Tail (`?tail=bytes`, default 48 KiB) or download (`?download=1`) a validated log filename |
 | `POST /api/v1/factory-reset` | Deferred: authenticated confirmed settings erase |
 | `POST /api/v1/ota` | Deferred: signed firmware upload with rollback |
 
@@ -375,13 +375,13 @@ Backlight behavior:
 - Mount `/sd` as FAT32 with `format_if_mount_failed = false`.
 - Absence, corruption, unsupported exFAT, or a full card is non-fatal.
 - V1 detects I/O failure/removal, closes logging, and marks SD degraded; arbitrary hot reinsertion is not supported until reboot because the card must be initialized before LCD traffic.
-- Log normalized events as append-only UTF-8 NDJSON under `/sd/airtrack/logs/`; never archive raw API payloads.
-- Default logging is off. Available modes are target changes and periodic snapshots.
-- Record target acquire/change/loss and feed/config/SD state changes; add a heartbeat for an unchanged target at the configured interval instead of logging every poll.
+- Log normalized sightings as append-only UTF-8 NDJSON under `/sd/airtrack/logs/`; never archive raw API payloads.
+- Default logging is off. When on, every distinct aircraft entering the tracked set is written once per 30-minute window ("sighting"); the periodic mode also writes a "heartbeat" for the nearest aircraft every `log_heartbeat_s`.
+- Records carry hex, callsign, registration, type, route, distance/bearing, altitude, speed, track, vertical rate, squawk, and emergency.
 - Before SNTP, write `unsynced-<boot-count>.ndjson` with `ts:null` and monotonic time. Once synchronized, use `YYYY-MM-DD-00.ndjson`.
 - Flush state transitions immediately; flush ordinary heartbeats within 30 seconds and `fsync` at least every 60 seconds.
 - Rotate at UTC midnight or 8 MiB, incrementing the numeric suffix.
-- Prune only strictly matching files inside `/sd/airtrack/logs`, oldest first, after either the day or size limit is exceeded. Preserve unrelated card contents and a 64 MiB/2% free-space floor.
+- Prune only strictly matching files inside `/sd/airtrack/logs`, oldest first, whenever the size cap (`retention_mib`, editable on the dashboard) or `retention_days` is exceeded; the check runs after roughly every 256 KiB written. Unrelated card contents are never touched.
 - Validate all download filenames and never expose arbitrary filesystem paths.
 
 Example record:
@@ -520,7 +520,7 @@ Keep a reset-loop counter in RTC-retained memory. Three watchdog/panic resets be
 ## 17. Deferred features
 
 - Onboard GPS for moving operation.
-- Aircraft photographs, route/airline enrichment, maps, and external APIs.
+- Aircraft photographs, maps, and scheduled departure/arrival times (route enrichment via adsbdb.com is implemented).
 - Historical charts beyond downloadable SD logs.
 - BLE provisioning, Thread/Zigbee, and persistent AP mode.
 - Safety-critical alerts or collision prediction.

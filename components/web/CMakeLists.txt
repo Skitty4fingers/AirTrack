@@ -9,6 +9,7 @@ idf_component_register(
     REQUIRES
         config
         esp_http_server
+        storage
         tracker
     PRIV_REQUIRES
         esp_app_format

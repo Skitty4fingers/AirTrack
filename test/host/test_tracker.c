@@ -172,6 +172,36 @@ static void test_squawk_and_emergency(void)
                3U, false, &snapshot) != ESP_OK);
 }
 
+static void test_focus_filter(void)
+{
+    static const char response[] =
+        "{\"ac\":[{\"hex\":\"abc123\",\"flight\":\"UAL205  \",\"r\":\"N37267\","
+        "\"lat\":37.63,\"lon\":-122.38,\"seen_pos\":0.5},"
+        "{\"hex\":\"def456\",\"flight\":\"SKW1\",\"lat\":37.62,\"lon\":-122.37,"
+        "\"seen_pos\":0.5}]}";
+    airtrack_settings_t config = settings(false);
+    airtrack_snapshot_t snapshot;
+    const char *focuses[] = {"UAL205", "ual205", "N37267", "ABC123", "abc123"};
+    for (size_t index = 0U; index < sizeof(focuses) / sizeof(focuses[0]); ++index) {
+        strcpy(config.focus_flight, focuses[index]);
+        airtrack_stream_parser_t *parser = airtrack_stream_parser_create(&config);
+        assert(parser != NULL);
+        assert(airtrack_stream_parser_feed(parser, response, strlen(response)) == ESP_OK);
+        assert(airtrack_stream_parser_finish(parser, &snapshot) == ESP_OK);
+        airtrack_stream_parser_destroy(parser);
+        assert(snapshot.aircraft_count == 1U);
+        assert(strcmp(snapshot.aircraft[0].hex, "ABC123") == 0);
+    }
+    strcpy(config.focus_flight, "NOPE1");
+    airtrack_stream_parser_t *parser = airtrack_stream_parser_create(&config);
+    assert(airtrack_stream_parser_feed(parser, response, strlen(response)) == ESP_OK);
+    assert(airtrack_stream_parser_finish(parser, &snapshot) == ESP_OK);
+    airtrack_stream_parser_destroy(parser);
+    assert(snapshot.aircraft_count == 0U);
+    assert(snapshot.state == AIRTRACK_FEED_EMPTY);
+    assert(airtrack_aircraft_matches(&snapshot.aircraft[0], "") == false);
+}
+
 static void test_target_hysteresis(void)
 {
     airtrack_snapshot_t previous = {.aircraft_count = 1U};
@@ -254,6 +284,7 @@ int main(int argc, char **argv)
     test_malformed_rejected();
     test_target_hysteresis();
     test_squawk_and_emergency();
+    test_focus_filter();
     puts("tracker host tests: PASS");
     return 0;
 }

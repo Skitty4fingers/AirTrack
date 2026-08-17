@@ -20,8 +20,11 @@
 
 #define AP_PREFIX "AirTrack-"
 #define SETTINGS_MAGIC 0x4b525441UL /* "ATRK" in little-endian storage. */
-#define SETTINGS_SCHEMA 1U
-#define SETTINGS_WIRE_BYTES 80U
+/* Schema 1 records are 80 bytes; schema 2 appends the focus flight. Older
+ * records decode with an empty focus; newer/unknown schemas are rejected. */
+#define SETTINGS_SCHEMA 2U
+#define SETTINGS_WIRE_BYTES 96U
+#define SETTINGS_V1_WIRE_BYTES 80U
 
 enum {
     WIRE_MAGIC = 0,
@@ -44,6 +47,8 @@ enum {
     WIRE_RETENTION_MIB = 43,
     WIRE_HOSTNAME_LENGTH = 45,
     WIRE_HOSTNAME = 46,
+    WIRE_FOCUS_LENGTH = 70,   /* schema 2 */
+    WIRE_FOCUS = 71,          /* schema 2, up to 8 bytes */
 };
 
 static const char AP_PASSWORD_ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -114,6 +119,27 @@ void airtrack_settings_defaults(airtrack_settings_t *out)
     memcpy(out->hostname, "airtrack", sizeof("airtrack"));
 }
 
+static bool focus_flight_valid(const char *focus)
+{
+    if (focus == NULL) {
+        return false;
+    }
+    const size_t length = strnlen(focus, AIRTRACK_FOCUS_MAX_LENGTH + 1U);
+    if (length > AIRTRACK_FOCUS_MAX_LENGTH) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        const char byte = focus[index];
+        const bool ok = (byte >= 'A' && byte <= 'Z') ||
+                        (byte >= '0' && byte <= '9') || byte == '-' ||
+                        (index == 0U && byte == '~');
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool hostname_valid(const char *hostname)
 {
     if (hostname == NULL) {
@@ -152,7 +178,8 @@ esp_err_t airtrack_settings_validate(const airtrack_settings_t *settings)
         settings->log_heartbeat_s > 3600U ||
         settings->retention_days < 1U || settings->retention_days > 365U ||
         settings->retention_mib < 8U || settings->retention_mib > 4096U ||
-        !hostname_valid(settings->hostname)) {
+        !hostname_valid(settings->hostname) ||
+        !focus_flight_valid(settings->focus_flight)) {
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
@@ -182,6 +209,9 @@ static void encode_settings(const airtrack_settings_t *settings,
     const size_t hostname_length = strlen(settings->hostname);
     wire[WIRE_HOSTNAME_LENGTH] = (uint8_t)hostname_length;
     memcpy(wire + WIRE_HOSTNAME, settings->hostname, hostname_length);
+    const size_t focus_length = strlen(settings->focus_flight);
+    wire[WIRE_FOCUS_LENGTH] = (uint8_t)focus_length;
+    memcpy(wire + WIRE_FOCUS, settings->focus_flight, focus_length);
     put_u32(wire + WIRE_CRC, 0U);
     put_u32(wire + WIRE_CRC,
             esp_crc32_le(UINT32_MAX, wire, SETTINGS_WIRE_BYTES));
@@ -190,17 +220,22 @@ static void encode_settings(const airtrack_settings_t *settings,
 static bool decode_settings(const uint8_t *wire, size_t length,
                             airtrack_settings_t *out)
 {
-    if (wire == NULL || out == NULL || length != SETTINGS_WIRE_BYTES ||
-        get_u32(wire + WIRE_MAGIC) != SETTINGS_MAGIC ||
-        get_u16(wire + WIRE_SCHEMA) != SETTINGS_SCHEMA ||
-        get_u16(wire + WIRE_LENGTH) != SETTINGS_WIRE_BYTES) {
+    if (wire == NULL || out == NULL || length < SETTINGS_V1_WIRE_BYTES ||
+        length > SETTINGS_WIRE_BYTES ||
+        get_u32(wire + WIRE_MAGIC) != SETTINGS_MAGIC) {
+        return false;
+    }
+    const uint16_t schema = get_u16(wire + WIRE_SCHEMA);
+    if (!((schema == 1U && length == SETTINGS_V1_WIRE_BYTES) ||
+          (schema == 2U && length == SETTINGS_WIRE_BYTES)) ||
+        get_u16(wire + WIRE_LENGTH) != length) {
         return false;
     }
     uint8_t checked[SETTINGS_WIRE_BYTES];
-    memcpy(checked, wire, sizeof(checked));
+    memcpy(checked, wire, length);
     const uint32_t stored_crc = get_u32(checked + WIRE_CRC);
     put_u32(checked + WIRE_CRC, 0U);
-    if (esp_crc32_le(UINT32_MAX, checked, sizeof(checked)) != stored_crc) {
+    if (esp_crc32_le(UINT32_MAX, checked, length) != stored_crc) {
         return false;
     }
     const uint8_t hostname_length = wire[WIRE_HOSTNAME_LENGTH];
@@ -226,6 +261,14 @@ static bool decode_settings(const uint8_t *wire, size_t length,
     };
     memcpy(decoded.hostname, wire + WIRE_HOSTNAME, hostname_length);
     decoded.hostname[hostname_length] = '\0';
+    if (schema >= 2U) {
+        const uint8_t focus_length = wire[WIRE_FOCUS_LENGTH];
+        if (focus_length > AIRTRACK_FOCUS_MAX_LENGTH) {
+            return false;
+        }
+        memcpy(decoded.focus_flight, wire + WIRE_FOCUS, focus_length);
+        decoded.focus_flight[focus_length] = '\0';
+    }
     if ((wire[WIRE_LOCATION_CONFIGURED] > 1U) ||
         (wire[WIRE_INCLUDE_GROUND] > 1U) ||
         airtrack_settings_validate(&decoded) != ESP_OK) {

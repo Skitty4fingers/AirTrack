@@ -7,6 +7,7 @@
 #include <strings.h>
 #include <time.h>
 
+#include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -23,6 +24,11 @@
 #define MAX_RATE_BACKOFF_S 900U
 #define VALID_TIME_EPOCH 1704067200L
 #define URL_MAX_BYTES 192U
+#define ROUTE_CACHE_ENTRIES 12U
+#define ROUTE_BODY_MAX_BYTES 2048U
+#define ROUTE_HTTP_TIMEOUT_MS 8000
+#define ROUTE_RETRY_UNKNOWN_MS (60LL * 60LL * 1000LL)
+#define ROUTE_RETRY_FAILED_MS (5LL * 60LL * 1000LL)
 
 static const char *TAG = "adsb_client";
 
@@ -51,6 +57,32 @@ typedef struct {
 } adsb_context_t;
 
 static adsb_context_t s_client;
+
+/*
+ * Route enrichment cache (adsbdb.com).  One lookup per poll cycle at most,
+ * keyed by callsign; unknown callsigns (general aviation) are remembered so
+ * they are not re-queried every poll.  Owned by the worker task.
+ */
+typedef struct {
+    char callsign[16];
+    bool used;
+    bool known;          /* adsbdb returned a route */
+    bool failed;         /* transport/parse failure; retry sooner */
+    char from[5];
+    char to[5];
+    bool destination_valid;
+    double destination_latitude;
+    double destination_longitude;
+    int64_t fetched_ms;
+} route_entry_t;
+
+static route_entry_t s_routes[ROUTE_CACHE_ENTRIES];
+
+typedef struct {
+    char body[ROUTE_BODY_MAX_BYTES + 1U];
+    size_t length;
+    bool overflow;
+} route_response_t;
 
 /*
  * The HTTP client is owned exclusively by the worker task and kept alive
@@ -239,7 +271,7 @@ static esp_err_t ensure_http_client(const char *url, bool *fresh)
         .timeout_ms = HTTP_TIMEOUT_MS,
         .buffer_size = 2048,
         .buffer_size_tx = 512,
-        .user_agent = "AirTrack/1.2 (ESP32-C6; personal non-commercial)",
+        .user_agent = "AirTrack/1.3 (ESP32-C6; personal non-commercial)",
         .keep_alive_enable = true,
         /* The production endpoint is canonical. Refuse redirects rather than
          * allowing an untrusted Location header to select another host. */
@@ -312,6 +344,228 @@ static esp_err_t perform_poll(const airtrack_settings_t *settings,
         drop_http_client();
     }
     return status;
+}
+
+static esp_err_t route_http_event(esp_http_client_event_t *event)
+{
+    route_response_t *response = event != NULL ? event->user_data : NULL;
+    if (response == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0) {
+        if (response->length + (size_t)event->data_len > ROUTE_BODY_MAX_BYTES) {
+            response->overflow = true;
+            return ESP_ERR_INVALID_SIZE;
+        }
+        memcpy(response->body + response->length, event->data,
+               (size_t)event->data_len);
+        response->length += (size_t)event->data_len;
+        response->body[response->length] = '\0';
+    }
+    return ESP_OK;
+}
+
+static bool copy_airport_code(const cJSON *airport, char out[5])
+{
+    out[0] = '\0';
+    if (!cJSON_IsObject(airport)) {
+        return false;
+    }
+    const cJSON *iata = cJSON_GetObjectItemCaseSensitive(airport, "iata_code");
+    const cJSON *icao = cJSON_GetObjectItemCaseSensitive(airport, "icao_code");
+    const cJSON *pick = cJSON_IsString(iata) && iata->valuestring != NULL &&
+                                strlen(iata->valuestring) == 3U
+                            ? iata
+                            : cJSON_IsString(icao) && icao->valuestring != NULL
+                                  ? icao : NULL;
+    if (pick == NULL) {
+        return false;
+    }
+    size_t used = 0U;
+    for (const char *cursor = pick->valuestring; *cursor != '\0' && used < 4U;
+         ++cursor) {
+        const unsigned char byte = (unsigned char)*cursor;
+        if ((byte >= 'A' && byte <= 'Z') || (byte >= '0' && byte <= '9')) {
+            out[used++] = (char)byte;
+        } else if (byte >= 'a' && byte <= 'z') {
+            out[used++] = (char)(byte - 'a' + 'A');
+        }
+    }
+    out[used] = '\0';
+    return used >= 3U;
+}
+
+static bool callsign_url_safe(const char *callsign)
+{
+    const size_t length = strnlen(callsign, 9U);
+    if (length < 3U || length > 8U) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        const unsigned char byte = (unsigned char)callsign[index];
+        if (!((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Query adsbdb.com once for one callsign and fill the cache entry. */
+static void route_lookup(route_entry_t *entry)
+{
+    entry->fetched_ms = monotonic_ms();
+    entry->known = false;
+    entry->failed = true;
+    entry->from[0] = '\0';
+    entry->to[0] = '\0';
+    entry->destination_valid = false;
+    if (!callsign_url_safe(entry->callsign)) {
+        entry->failed = false; /* never valid; treat as unknown */
+        return;
+    }
+    char url[96];
+    const int url_length = snprintf(url, sizeof(url),
+                                    "https://api.adsbdb.com/v0/callsign/%s",
+                                    entry->callsign);
+    if (url_length < 0 || (size_t)url_length >= sizeof(url)) {
+        return;
+    }
+    route_response_t *response = calloc(1U, sizeof(*response));
+    if (response == NULL) {
+        return;
+    }
+    const esp_http_client_config_t config = {
+        .url = url,
+        .event_handler = route_http_event,
+        .user_data = response,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = ROUTE_HTTP_TIMEOUT_MS,
+        .buffer_size = 1024,
+        .buffer_size_tx = 512,
+        .user_agent = "AirTrack/1.3 (ESP32-C6; personal non-commercial)",
+        .disable_auto_redirect = true,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        free(response);
+        return;
+    }
+    (void)esp_http_client_set_header(client, "Accept", "application/json");
+    const esp_err_t status = esp_http_client_perform(client);
+    const int http_status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (status == ESP_OK && !response->overflow &&
+        (http_status == 200 || http_status == 404)) {
+        entry->failed = false;
+        cJSON *root = cJSON_ParseWithLength(response->body, response->length);
+        const cJSON *body = cJSON_GetObjectItemCaseSensitive(root, "response");
+        const cJSON *route = cJSON_GetObjectItemCaseSensitive(body, "flightroute");
+        if (cJSON_IsObject(route)) {
+            const cJSON *origin = cJSON_GetObjectItemCaseSensitive(route, "origin");
+            const cJSON *destination =
+                cJSON_GetObjectItemCaseSensitive(route, "destination");
+            char from[5];
+            char to[5];
+            if (copy_airport_code(origin, from) && copy_airport_code(destination, to)) {
+                memcpy(entry->from, from, sizeof(from));
+                memcpy(entry->to, to, sizeof(to));
+                entry->known = true;
+                const cJSON *latitude =
+                    cJSON_GetObjectItemCaseSensitive(destination, "latitude");
+                const cJSON *longitude =
+                    cJSON_GetObjectItemCaseSensitive(destination, "longitude");
+                if (cJSON_IsNumber(latitude) && cJSON_IsNumber(longitude) &&
+                    latitude->valuedouble >= -90.0 && latitude->valuedouble <= 90.0 &&
+                    longitude->valuedouble >= -180.0 &&
+                    longitude->valuedouble <= 180.0) {
+                    entry->destination_valid = true;
+                    entry->destination_latitude = latitude->valuedouble;
+                    entry->destination_longitude = longitude->valuedouble;
+                }
+            }
+        }
+        cJSON_Delete(root);
+        ESP_LOGI(TAG, "route %s: %s", entry->callsign,
+                 entry->known ? entry->to : "unknown");
+    } else {
+        ESP_LOGW(TAG, "route lookup for %s failed: %s (HTTP %d)",
+                 entry->callsign, esp_err_to_name(status), http_status);
+    }
+    free(response);
+}
+
+static route_entry_t *route_cache_find(const char *callsign)
+{
+    for (size_t index = 0U; index < ROUTE_CACHE_ENTRIES; ++index) {
+        if (s_routes[index].used &&
+            strcmp(s_routes[index].callsign, callsign) == 0) {
+            return &s_routes[index];
+        }
+    }
+    return NULL;
+}
+
+static route_entry_t *route_cache_allocate(const char *callsign)
+{
+    route_entry_t *victim = &s_routes[0];
+    for (size_t index = 0U; index < ROUTE_CACHE_ENTRIES; ++index) {
+        if (!s_routes[index].used) {
+            victim = &s_routes[index];
+            break;
+        }
+        if (s_routes[index].fetched_ms < victim->fetched_ms) {
+            victim = &s_routes[index];
+        }
+    }
+    memset(victim, 0, sizeof(*victim));
+    (void)snprintf(victim->callsign, sizeof(victim->callsign), "%s", callsign);
+    victim->used = true;
+    return victim;
+}
+
+static void apply_route(airtrack_aircraft_t *aircraft, const route_entry_t *entry)
+{
+    aircraft->route_valid = entry->known;
+    if (entry->known) {
+        memcpy(aircraft->route_from, entry->from, sizeof(aircraft->route_from));
+        memcpy(aircraft->route_to, entry->to, sizeof(aircraft->route_to));
+        aircraft->destination_valid = entry->destination_valid;
+        aircraft->destination_latitude = entry->destination_latitude;
+        aircraft->destination_longitude = entry->destination_longitude;
+    }
+}
+
+/*
+ * Fill route fields from the cache; returns the first aircraft whose
+ * callsign still needs a network lookup (or NULL).
+ */
+static airtrack_aircraft_t *enrich_from_cache(airtrack_snapshot_t *snapshot)
+{
+    airtrack_aircraft_t *pending = NULL;
+    const int64_t now = monotonic_ms();
+    for (size_t index = 0U; index < snapshot->aircraft_count; ++index) {
+        airtrack_aircraft_t *aircraft = &snapshot->aircraft[index];
+        if (aircraft->callsign[0] == '\0') {
+            continue;
+        }
+        route_entry_t *entry = route_cache_find(aircraft->callsign);
+        if (entry != NULL) {
+            const int64_t age = now - entry->fetched_ms;
+            const bool expired = entry->failed ? age > ROUTE_RETRY_FAILED_MS
+                                 : !entry->known ? age > ROUTE_RETRY_UNKNOWN_MS
+                                                 : false;
+            if (!expired) {
+                apply_route(aircraft, entry);
+                continue;
+            }
+        }
+        if (pending == NULL) {
+            pending = aircraft;
+        }
+    }
+    return pending;
 }
 
 static void worker(void *argument)
@@ -398,7 +652,19 @@ static void worker(void *argument)
             airtrack_apply_target_hysteresis(&previous, &candidate,
                                              s_client.pending_hex,
                                              &s_client.pending_polls);
+            airtrack_aircraft_t *pending = enrich_from_cache(&candidate);
             publish_snapshot(&candidate);
+            if (pending != NULL) {
+                /* One bounded lookup per cycle, after the poll is visible. */
+                route_entry_t *entry = route_cache_find(pending->callsign);
+                if (entry == NULL) {
+                    entry = route_cache_allocate(pending->callsign);
+                }
+                route_lookup(entry);
+                (void)enrich_from_cache(&candidate);
+                candidate.sequence++;
+                publish_snapshot(&candidate);
+            }
             failure_backoff_s = 5U;
             xSemaphoreTake(s_client.lock, portMAX_DELAY);
             ++s_client.polls_ok;

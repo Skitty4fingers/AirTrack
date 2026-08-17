@@ -68,3 +68,13 @@ button:hover{background:var(--blue2)}button.ghost:hover{background:#f0f4f9}
 footer{text-align:center;color:var(--muted);font-size:.9rem;padding:16px}
 [hidden]{display:none!important}
 @media (max-width:860px){body{grid-template-columns:minmax(0,1fr)}.side{position:static;height:auto;padding:12px 0 0}.side nav{display:flex;overflow-x:auto}.side nav a{border-left:0;border-bottom:3px solid transparent;padding:10px 14px}.side nav a.active{border-bottom-color:#3fb0ff}.grid{grid-template-columns:minmax(0,1fr)}.top{justify-content:flex-start}.nearest{grid-template-columns:120px 1fr}.compass{width:120px;height:120px}.sys{grid-template-columns:1fr}}
+.geo{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;margin-top:12px;align-items:center}
+.geo input{margin:0}.geo button{white-space:nowrap;padding:10px 14px}
+.logs{margin-top:16px;border-top:1px solid var(--line);padding-top:6px}
+.logbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:10px 0 8px}
+.loglist{display:flex;flex-wrap:wrap;gap:8px}
+.loglist button{padding:7px 12px;font-weight:600;background:#fff;color:var(--ink);border-color:#c9d3e0}
+.loglist button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.loglist small{color:var(--muted);font-weight:400;margin-left:6px}
+a.ghost{font:inherit;font-weight:700;border-radius:8px;padding:8px 14px;border:1px solid #c9d3e0;background:#fff;color:var(--ink);text-decoration:none}
+#logrows td{white-space:nowrap}

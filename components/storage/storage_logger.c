@@ -1,7 +1,10 @@
 #include "storage_logger.h"
 
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -15,11 +18,22 @@
 #include "freertos/task.h"
 
 #define LOG_QUEUE_LENGTH 4U
-#define LOG_TASK_STACK_BYTES 4096U
+#define LOG_TASK_STACK_BYTES 5120U
 #define LOG_ROTATE_BYTES (8U * 1024U * 1024U)
 #define LOG_DIR BOARD_SD_MOUNT_POINT "/airtrack/logs"
+#define LOG_GATE_TIMEOUT_MS 5000U
+#define LOG_READ_GATE_TIMEOUT_MS 2000U
+#define SIGHTING_WINDOW_MS (30U * 60U * 1000U)
+#define SEEN_ENTRIES 32U
+#define PRUNE_CHECK_BYTES (256U * 1024U)
+#define VALID_TIME_EPOCH 1704067200L
 
 static const char *TAG = "storage";
+
+typedef struct {
+    char hex[16];
+    TickType_t logged_at;
+} seen_entry_t;
 
 typedef struct {
     SemaphoreHandle_t lock;
@@ -69,6 +83,35 @@ static size_t escape_json(char *out, size_t capacity, const char *input)
     return used;
 }
 
+/* Names: YYYY-MM-DD.ndjson, YYYY-MM-DD.ndjson.1, or unsynced.ndjson[.1]. */
+bool storage_logger_valid_name(const char *name)
+{
+    if (name == NULL) {
+        return false;
+    }
+    const size_t length = strnlen(name, STORAGE_LOG_NAME_MAX_BYTES + 1U);
+    if (length > STORAGE_LOG_NAME_MAX_BYTES) {
+        return false;
+    }
+    const char *rest;
+    if (strncmp(name, "unsynced", 8U) == 0) {
+        rest = name + 8U;
+    } else {
+        for (size_t index = 0U; index < 10U; ++index) {
+            const char byte = name[index];
+            if (index == 4U || index == 7U) {
+                if (byte != '-') {
+                    return false;
+                }
+            } else if (!isdigit((unsigned char)byte)) {
+                return false;
+            }
+        }
+        rest = name + 10U;
+    }
+    return strcmp(rest, ".ndjson") == 0 || strcmp(rest, ".ndjson.1") == 0;
+}
+
 static esp_err_t ensure_directories(void)
 {
     if (mkdir(BOARD_SD_MOUNT_POINT "/airtrack", 0775) != 0 && errno != EEXIST) {
@@ -80,16 +123,16 @@ static esp_err_t ensure_directories(void)
     return ESP_OK;
 }
 
-static void make_log_path(char path[96])
+static void make_log_name(char name[STORAGE_LOG_NAME_MAX_BYTES + 1U])
 {
     const time_t now = time(NULL);
     struct tm utc;
-    if (now >= 1704067200L && gmtime_r(&now, &utc) != NULL) {
-        (void)snprintf(path, 96, LOG_DIR "/%04d-%02d-%02d.ndjson",
-                       utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday);
+    if (now >= VALID_TIME_EPOCH && gmtime_r(&now, &utc) != NULL) {
+        (void)snprintf(name, STORAGE_LOG_NAME_MAX_BYTES + 1U,
+                       "%04u-%02u-%02u.ndjson", (unsigned)(utc.tm_year + 1900) % 10000U,
+                       (unsigned)(utc.tm_mon + 1) % 100U, (unsigned)utc.tm_mday % 100U);
     } else {
-        memcpy(path, LOG_DIR "/unsynced.ndjson",
-               sizeof(LOG_DIR "/unsynced.ndjson"));
+        memcpy(name, "unsynced.ndjson", sizeof("unsynced.ndjson"));
     }
 }
 
@@ -108,10 +151,107 @@ static esp_err_t rotate_if_needed(const char *path)
     return rename(path, rotated) == 0 ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t append_snapshot(const airtrack_snapshot_t *snapshot)
+/* Bounded directory scan; caller holds the SPI gate. Sorted oldest first. */
+static int compare_names(const void *left, const void *right)
 {
-    char path[96];
-    make_log_path(path);
+    const storage_log_file_t *a = left;
+    const storage_log_file_t *b = right;
+    /* "unsynced" records predate time sync: treat as oldest. */
+    const bool a_unsynced = a->name[0] == 'u';
+    const bool b_unsynced = b->name[0] == 'u';
+    if (a_unsynced != b_unsynced) {
+        return a_unsynced ? -1 : 1;
+    }
+    return strcmp(a->name, b->name);
+}
+
+static esp_err_t scan_logs(storage_log_file_t *files, size_t capacity,
+                           size_t *count, uint64_t *total_bytes)
+{
+    *count = 0U;
+    *total_bytes = 0U;
+    DIR *directory = opendir(LOG_DIR);
+    if (directory == NULL) {
+        return errno == ENOENT ? ESP_OK : ESP_FAIL;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!storage_logger_valid_name(entry->d_name)) {
+            continue;
+        }
+        char path[128];
+        struct stat info;
+        if (snprintf(path, sizeof(path), LOG_DIR "/%.31s", entry->d_name) < 0 ||
+            stat(path, &info) != 0) {
+            continue;
+        }
+        *total_bytes += (uint64_t)info.st_size;
+        if (*count < capacity) {
+            (void)snprintf(files[*count].name, sizeof(files[*count].name), "%.31s",
+                           entry->d_name);
+            files[*count].bytes = (uint32_t)info.st_size;
+            ++(*count);
+        }
+    }
+    closedir(directory);
+    qsort(files, *count, sizeof(files[0]), compare_names);
+    return ESP_OK;
+}
+
+/* Delete oldest files until size and day limits hold. Caller holds gate. */
+static void enforce_retention(const airtrack_settings_t *settings,
+                              const char *current_name)
+{
+    storage_log_file_t files[STORAGE_LOG_MAX_LISTED];
+    size_t count = 0U;
+    uint64_t total = 0U;
+    if (scan_logs(files, STORAGE_LOG_MAX_LISTED, &count, &total) != ESP_OK) {
+        return;
+    }
+    const uint64_t limit = (uint64_t)settings->retention_mib * 1024ULL * 1024ULL;
+    uint32_t pruned = 0U;
+    for (size_t index = 0U; index < count; ++index) {
+        const bool is_current = strcmp(files[index].name, current_name) == 0;
+        bool too_old = false;
+        if (!is_current && files[index].name[0] != 'u' && current_name[0] != 'u') {
+            /* Compare YYYY-MM-DD lexically against the cut-off date. */
+            const time_t now = time(NULL);
+            const time_t cutoff = now - (time_t)settings->retention_days * 86400L;
+            struct tm utc;
+            char cutoff_name[16];
+            if (gmtime_r(&cutoff, &utc) != NULL) {
+                (void)snprintf(cutoff_name, sizeof(cutoff_name), "%04u-%02u-%02u",
+                               (unsigned)(utc.tm_year + 1900) % 10000U,
+                               (unsigned)(utc.tm_mon + 1) % 100U,
+                               (unsigned)utc.tm_mday % 100U);
+                too_old = strncmp(files[index].name, cutoff_name, 10U) < 0;
+            }
+        }
+        if (is_current || (total <= limit && !too_old)) {
+            continue;
+        }
+        char path[128];
+        (void)snprintf(path, sizeof(path), LOG_DIR "/%.31s", files[index].name);
+        if (unlink(path) == 0) {
+            total -= files[index].bytes;
+            ++pruned;
+            ESP_LOGI(TAG, "pruned %s (%s)", files[index].name,
+                     too_old ? "older than retention" : "size cap");
+        }
+    }
+    xSemaphoreTake(s_logger.lock, portMAX_DELAY);
+    s_logger.status.files_pruned += pruned;
+    s_logger.status.log_bytes = total;
+    s_logger.status.log_files = (uint32_t)count - pruned;
+    xSemaphoreGive(s_logger.lock);
+}
+
+static esp_err_t append_record(const char *name, const airtrack_snapshot_t *snapshot,
+                               const airtrack_aircraft_t *aircraft,
+                               const char *event, bool nearest)
+{
+    char path[128];
+    (void)snprintf(path, sizeof(path), LOG_DIR "/%.31s", name);
     esp_err_t result = ensure_directories();
     if (result == ESP_OK) {
         result = rotate_if_needed(path);
@@ -120,43 +260,50 @@ static esp_err_t append_snapshot(const airtrack_snapshot_t *snapshot)
         return result;
     }
 
-    char line[768];
-    const airtrack_aircraft_t *aircraft =
-        snapshot->aircraft_count > 0U ? &snapshot->aircraft[0] : NULL;
     char hex[40] = "";
     char callsign[48] = "";
     char registration[48] = "";
-    if (aircraft != NULL &&
-        (escape_json(hex, sizeof(hex), aircraft->hex) == 0U ||
-         (aircraft->callsign[0] != '\0' &&
-          escape_json(callsign, sizeof(callsign), aircraft->callsign) == 0U) ||
-         (aircraft->registration[0] != '\0' &&
-          escape_json(registration, sizeof(registration),
-                      aircraft->registration) == 0U))) {
+    char type[24] = "";
+    if (escape_json(hex, sizeof(hex), aircraft->hex) == 0U ||
+        (aircraft->callsign[0] != '\0' &&
+         escape_json(callsign, sizeof(callsign), aircraft->callsign) == 0U) ||
+        (aircraft->registration[0] != '\0' &&
+         escape_json(registration, sizeof(registration),
+                     aircraft->registration) == 0U) ||
+        (aircraft->aircraft_type[0] != '\0' &&
+         escape_json(type, sizeof(type), aircraft->aircraft_type) == 0U)) {
         return ESP_ERR_INVALID_SIZE;
     }
+    char timestamp[32] = "null";
     const time_t now = time(NULL);
-    const int length = aircraft != NULL
-        ? snprintf(line, sizeof(line),
-            "{\"v\":1,\"epoch\":%lld,\"mono_ms\":%lld,\"state\":\"%s\","
-            "\"hex\":\"%s\",\"flight\":\"%s\",\"reg\":\"%s\","
-            "\"dst_nm\":%.3f,\"dir_deg\":%.1f,\"alt_ft\":%ld,"
-            "\"ground\":%s,\"gs_kt\":%.1f,\"track_deg\":%.1f,"
-            "\"vr_fpm\":%ld,\"seen_pos_s\":%.2f}\n",
-            (long long)(now >= 1704067200L ? now : 0),
-            (long long)snapshot->updated_monotonic_ms,
-            airtrack_feed_state_name(snapshot->state), hex, callsign,
-            registration, (double)aircraft->distance_nm,
-            (double)aircraft->bearing_deg, (long)aircraft->altitude_ft,
-            aircraft->ground ? "true" : "false",
-            (double)aircraft->ground_speed_kt, (double)aircraft->track_deg,
-            (long)aircraft->vertical_rate_fpm, (double)aircraft->seen_pos_s)
-        : snprintf(line, sizeof(line),
-            "{\"v\":1,\"epoch\":%lld,\"mono_ms\":%lld,\"state\":\"%s\","
-            "\"aircraft\":null}\n",
-            (long long)(now >= 1704067200L ? now : 0),
-            (long long)snapshot->updated_monotonic_ms,
-            airtrack_feed_state_name(snapshot->state));
+    struct tm utc;
+    if (now >= VALID_TIME_EPOCH && gmtime_r(&now, &utc) != NULL) {
+        (void)snprintf(timestamp, sizeof(timestamp),
+                       "\"%04u-%02u-%02uT%02u:%02u:%02uZ\"",
+                       (unsigned)(utc.tm_year + 1900) % 10000U,
+                       (unsigned)(utc.tm_mon + 1) % 100U,
+                       (unsigned)utc.tm_mday % 100U, (unsigned)utc.tm_hour % 100U,
+                       (unsigned)utc.tm_min % 100U, (unsigned)utc.tm_sec % 100U);
+    }
+    char route[16] = "";
+    if (aircraft->route_valid) {
+        (void)snprintf(route, sizeof(route), "%s-%s", aircraft->route_from,
+                       aircraft->route_to);
+    }
+    char line[640];
+    const int length = snprintf(line, sizeof(line),
+        "{\"v\":2,\"ts\":%s,\"mono_ms\":%lld,\"event\":\"%s\",\"nearest\":%s,"
+        "\"hex\":\"%s\",\"flight\":\"%s\",\"reg\":\"%s\",\"type\":\"%s\","
+        "\"route\":\"%s\",\"dst_nm\":%.3f,\"dir_deg\":%.1f,\"alt_ft\":%ld,"
+        "\"ground\":%s,\"gs_kt\":%.1f,\"track_deg\":%.1f,\"vr_fpm\":%ld,"
+        "\"squawk\":\"%s\",\"emergency\":%s,\"seen_pos_s\":%.2f}\n",
+        timestamp, (long long)snapshot->updated_monotonic_ms, event,
+        nearest ? "true" : "false", hex, callsign, registration, type, route,
+        (double)aircraft->distance_nm, (double)aircraft->bearing_deg,
+        (long)aircraft->altitude_ft, aircraft->ground ? "true" : "false",
+        (double)aircraft->ground_speed_kt, (double)aircraft->track_deg,
+        (long)aircraft->vertical_rate_fpm, aircraft->squawk,
+        aircraft->emergency ? "true" : "false", (double)aircraft->seen_pos_s);
     if (length < 0 || (size_t)length >= sizeof(line)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -170,12 +317,40 @@ static esp_err_t append_snapshot(const airtrack_snapshot_t *snapshot)
     return flushed && close_result == 0 ? ESP_OK : ESP_FAIL;
 }
 
+static bool recently_logged(seen_entry_t *seen, const char *hex, TickType_t now)
+{
+    seen_entry_t *slot = NULL;
+    for (size_t index = 0U; index < SEEN_ENTRIES; ++index) {
+        if (seen[index].hex[0] != '\0' && strcmp(seen[index].hex, hex) == 0) {
+            if ((TickType_t)(now - seen[index].logged_at) <
+                pdMS_TO_TICKS(SIGHTING_WINDOW_MS)) {
+                return true;
+            }
+            slot = &seen[index];
+            break;
+        }
+        if (slot == NULL &&
+            (seen[index].hex[0] == '\0' ||
+             (TickType_t)(now - seen[index].logged_at) >=
+                 pdMS_TO_TICKS(SIGHTING_WINDOW_MS))) {
+            slot = &seen[index];
+        }
+    }
+    if (slot == NULL) {
+        slot = &seen[0]; /* all busy and fresh: reuse the first, bounded */
+    }
+    (void)snprintf(slot->hex, sizeof(slot->hex), "%s", hex);
+    slot->logged_at = now;
+    return false;
+}
+
 static void logger_task(void *argument)
 {
     (void)argument;
-    char previous_hex[16] = {0};
-    airtrack_feed_state_t previous_state = AIRTRACK_FEED_CONFIG_REQUIRED;
-    TickType_t last_record = 0U;
+    static seen_entry_t seen[SEEN_ENTRIES];
+    memset(seen, 0, sizeof(seen));
+    TickType_t last_heartbeat = 0U;
+    uint32_t bytes_since_prune = PRUNE_CHECK_BYTES; /* prune on first write */
     for (;;) {
         airtrack_snapshot_t snapshot;
         if (xQueueReceive(s_logger.queue, &snapshot, pdMS_TO_TICKS(500U)) != pdTRUE) {
@@ -193,38 +368,74 @@ static void logger_task(void *argument)
         if (stop) {
             break;
         }
-        const char *hex = snapshot.aircraft_count > 0U
-                              ? snapshot.aircraft[0].hex : "";
-        const bool changed = strcmp(hex, previous_hex) != 0 ||
-                             snapshot.state != previous_state;
-        const bool heartbeat = (TickType_t)(xTaskGetTickCount() - last_record) >=
-            pdMS_TO_TICKS((uint32_t)settings.log_heartbeat_s * 1000U);
-        const bool should_write = settings.logging_mode == AIRTRACK_LOGGING_PERIODIC
-                                      ? (changed || heartbeat)
-                                  : settings.logging_mode ==
-                                        AIRTRACK_LOGGING_TARGET_CHANGES
-                                      ? changed : false;
-        if (should_write && board_spi_acquire(pdMS_TO_TICKS(5000U))) {
-            const esp_err_t result = append_snapshot(&snapshot);
-            board_spi_release();
-            xSemaphoreTake(s_logger.lock, portMAX_DELAY);
-            s_logger.status.last_error = result;
-            if (result == ESP_OK) {
-                ++s_logger.status.records_written;
-                last_record = xTaskGetTickCount();
-                (void)snprintf(previous_hex, sizeof(previous_hex), "%s", hex);
-                previous_state = snapshot.state;
+        if (settings.logging_mode == AIRTRACK_LOGGING_OFF ||
+            snapshot.aircraft_count == 0U ||
+            snapshot.state != AIRTRACK_FEED_LIVE) {
+            continue;
+        }
+
+        /* Decide which records this snapshot produces. */
+        const TickType_t now = xTaskGetTickCount();
+        bool write_sighting[AIRTRACK_MAX_AIRCRAFT] = {false};
+        bool any = false;
+        for (size_t index = 0U; index < snapshot.aircraft_count; ++index) {
+            if (!recently_logged(seen, snapshot.aircraft[index].hex, now)) {
+                write_sighting[index] = true;
+                any = true;
             }
-            xSemaphoreGive(s_logger.lock);
-            if (result != ESP_OK) {
-                ESP_LOGW(TAG, "SD log write failed: %s", esp_err_to_name(result));
-            }
-        } else if (should_write) {
+        }
+        const bool heartbeat =
+            settings.logging_mode == AIRTRACK_LOGGING_PERIODIC &&
+            (TickType_t)(now - last_heartbeat) >=
+                pdMS_TO_TICKS((uint32_t)settings.log_heartbeat_s * 1000U);
+        if (!any && !heartbeat) {
+            continue;
+        }
+
+        if (!board_spi_acquire(pdMS_TO_TICKS(LOG_GATE_TIMEOUT_MS))) {
             xSemaphoreTake(s_logger.lock, portMAX_DELAY);
             s_logger.status.last_error = ESP_ERR_TIMEOUT;
             ++s_logger.status.records_dropped;
             xSemaphoreGive(s_logger.lock);
             ESP_LOGW(TAG, "SD log write skipped: shared SPI bus timeout");
+            continue;
+        }
+        char name[STORAGE_LOG_NAME_MAX_BYTES + 1U];
+        make_log_name(name);
+        esp_err_t result = ESP_OK;
+        uint32_t written = 0U;
+        for (size_t index = 0U; result == ESP_OK &&
+             index < snapshot.aircraft_count; ++index) {
+            const bool is_heartbeat_target = heartbeat && index == 0U;
+            if (!write_sighting[index] && !is_heartbeat_target) {
+                continue;
+            }
+            result = append_record(name, &snapshot, &snapshot.aircraft[index],
+                                   write_sighting[index] ? "sighting" : "heartbeat",
+                                   index == 0U);
+            if (result == ESP_OK) {
+                ++written;
+                bytes_since_prune += 320U;
+            }
+        }
+        if (result == ESP_OK && heartbeat) {
+            last_heartbeat = now;
+        }
+        if (result == ESP_OK && bytes_since_prune >= PRUNE_CHECK_BYTES) {
+            bytes_since_prune = 0U;
+            enforce_retention(&settings, name);
+        }
+        board_spi_release();
+
+        xSemaphoreTake(s_logger.lock, portMAX_DELAY);
+        s_logger.status.last_error = result;
+        s_logger.status.records_written += written;
+        if (result != ESP_OK) {
+            ++s_logger.status.records_dropped;
+        }
+        xSemaphoreGive(s_logger.lock);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "SD log write failed: %s", esp_err_to_name(result));
         }
     }
     xSemaphoreTake(s_logger.lock, portMAX_DELAY);
@@ -235,12 +446,8 @@ static void logger_task(void *argument)
     vTaskDelete(NULL);
 }
 
-esp_err_t storage_logger_start(bool sd_mounted,
-                               const airtrack_settings_t *settings)
+static esp_err_t ensure_primitives(void)
 {
-    if (settings == NULL || airtrack_settings_validate(settings) != ESP_OK) {
-        return ESP_ERR_INVALID_ARG;
-    }
     if (s_logger.lock == NULL) {
         s_logger.lock = xSemaphoreCreateMutexStatic(&s_logger.lock_storage);
     }
@@ -249,8 +456,19 @@ esp_err_t storage_logger_start(bool sd_mounted,
             LOG_QUEUE_LENGTH, sizeof(airtrack_snapshot_t), s_logger.queue_buffer,
             &s_logger.queue_storage);
     }
-    if (s_logger.lock == NULL || s_logger.queue == NULL) {
-        return ESP_ERR_NO_MEM;
+    return s_logger.lock != NULL && s_logger.queue != NULL ? ESP_OK
+                                                           : ESP_ERR_NO_MEM;
+}
+
+esp_err_t storage_logger_start(bool sd_mounted,
+                               const airtrack_settings_t *settings)
+{
+    if (settings == NULL || airtrack_settings_validate(settings) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = ensure_primitives();
+    if (err != ESP_OK) {
+        return err;
     }
     xSemaphoreTake(s_logger.lock, portMAX_DELAY);
     if (s_logger.running) {
@@ -261,9 +479,14 @@ esp_err_t storage_logger_start(bool sd_mounted,
     s_logger.settings = *settings;
     s_logger.sd_mounted = sd_mounted;
     s_logger.stop_requested = false;
+    const storage_logger_status_t previous = s_logger.status;
     s_logger.status = (storage_logger_status_t) {
         .running = true,
         .enabled = sd_mounted && settings->logging_mode != AIRTRACK_LOGGING_OFF,
+        .records_written = previous.records_written,
+        .files_pruned = previous.files_pruned,
+        .log_bytes = previous.log_bytes,
+        .log_files = previous.log_files,
     };
     s_logger.running = true;
     s_logger.task = xTaskCreateStatic(logger_task, "storage", LOG_TASK_STACK_BYTES,
@@ -349,4 +572,80 @@ esp_err_t storage_logger_stop(void)
         }
     }
     return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t storage_logger_list(storage_log_file_t *files, size_t capacity,
+                              size_t *count, uint64_t *total_bytes)
+{
+    if (files == NULL || count == NULL || total_bytes == NULL || capacity == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *count = 0U;
+    *total_bytes = 0U;
+    if (!board_sd_is_mounted()) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (!board_spi_acquire(pdMS_TO_TICKS(LOG_READ_GATE_TIMEOUT_MS))) {
+        return ESP_ERR_TIMEOUT;
+    }
+    const esp_err_t result = scan_logs(files, capacity, count, total_bytes);
+    board_spi_release();
+    if (result == ESP_OK) {
+        /* newest first for readers */
+        for (size_t left = 0U, right = *count; left + 1U < right; ++left, --right) {
+            const storage_log_file_t swap = files[left];
+            files[left] = files[right - 1U];
+            files[right - 1U] = swap;
+        }
+        if (s_logger.lock != NULL) {
+            xSemaphoreTake(s_logger.lock, portMAX_DELAY);
+            s_logger.status.log_bytes = *total_bytes;
+            s_logger.status.log_files = (uint32_t)*count;
+            xSemaphoreGive(s_logger.lock);
+        }
+    }
+    return result;
+}
+
+esp_err_t storage_logger_read(const char *name, size_t offset, void *buffer,
+                              size_t capacity, size_t *read_bytes,
+                              size_t *file_size)
+{
+    if (!storage_logger_valid_name(name) || buffer == NULL ||
+        read_bytes == NULL || file_size == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *read_bytes = 0U;
+    *file_size = 0U;
+    if (!board_sd_is_mounted()) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    char path[128];
+    (void)snprintf(path, sizeof(path), LOG_DIR "/%.31s", name);
+    if (!board_spi_acquire(pdMS_TO_TICKS(LOG_READ_GATE_TIMEOUT_MS))) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t result = ESP_OK;
+    struct stat info;
+    FILE *file = NULL;
+    if (stat(path, &info) != 0) {
+        result = ESP_ERR_NOT_FOUND;
+    } else {
+        *file_size = (size_t)info.st_size;
+        file = fopen(path, "rb");
+        if (file == NULL) {
+            result = ESP_FAIL;
+        } else if (offset < *file_size) {
+            if (fseek(file, (long)offset, SEEK_SET) != 0) {
+                result = ESP_FAIL;
+            } else {
+                *read_bytes = fread(buffer, 1U, capacity, file);
+            }
+        }
+    }
+    if (file != NULL) {
+        fclose(file);
+    }
+    board_spi_release();
+    return result;
 }

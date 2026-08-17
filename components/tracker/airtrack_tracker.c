@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cJSON.h"
 
@@ -115,9 +116,9 @@ static double radians(double degrees)
     return degrees * (M_PI / 180.0);
 }
 
-static void fallback_geometry(double origin_latitude, double origin_longitude,
-                              double latitude, double longitude,
-                              float *distance_nm, float *bearing_deg)
+void airtrack_geometry(double origin_latitude, double origin_longitude,
+                       double latitude, double longitude,
+                       float *distance_nm, float *bearing_deg)
 {
     const double lat1 = radians(origin_latitude);
     const double lat2 = radians(latitude);
@@ -262,6 +263,12 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
         ++parser->rejected;
         return ESP_OK;
     }
+    if (parser->settings.focus_flight[0] != '\0' &&
+        !airtrack_aircraft_matches(&aircraft, parser->settings.focus_flight)) {
+        cJSON_Delete(root);
+        ++parser->rejected;
+        return ESP_OK;
+    }
 
     const cJSON *distance = unique_item(root, "dst", &duplicate);
     const cJSON *bearing = unique_item(root, "dir", &duplicate);
@@ -270,7 +277,7 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
         aircraft.distance_nm = (float)distance->valuedouble;
         aircraft.bearing_deg = (float)fmod(bearing->valuedouble + 3600.0, 360.0);
     } else {
-        fallback_geometry((double)parser->settings.latitude_e7 / 10000000.0,
+        airtrack_geometry((double)parser->settings.latitude_e7 / 10000000.0,
                           (double)parser->settings.longitude_e7 / 10000000.0,
                           aircraft.latitude, aircraft.longitude,
                           &aircraft.distance_nm, &aircraft.bearing_deg);
@@ -577,6 +584,19 @@ void airtrack_apply_target_hysteresis(const airtrack_snapshot_t *previous,
         pending_hex[0] = '\0';
         *pending_polls = 0U;
     }
+}
+
+bool airtrack_aircraft_matches(const airtrack_aircraft_t *aircraft,
+                               const char *focus)
+{
+    if (aircraft == NULL || focus == NULL || focus[0] == '\0') {
+        return false;
+    }
+    return strcasecmp(aircraft->hex, focus) == 0 ||
+           (aircraft->callsign[0] != '\0' &&
+            strcasecmp(aircraft->callsign, focus) == 0) ||
+           (aircraft->registration[0] != '\0' &&
+            strcasecmp(aircraft->registration, focus) == 0);
 }
 
 const char *airtrack_feed_state_name(airtrack_feed_state_t state)

@@ -186,6 +186,9 @@ static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
     updated.distance_unit = requested->distance_unit;
     updated.brightness_percent = requested->brightness_percent;
     updated.logging_mode = requested->logging_mode;
+    updated.retention_mib = requested->retention_mib;
+    memcpy(updated.focus_flight, requested->focus_flight,
+           sizeof(updated.focus_flight));
     esp_err_t err = airtrack_settings_validate(&updated);
     if (err == ESP_OK) {
         err = airtrack_config_save_settings(&updated);
@@ -280,6 +283,9 @@ static status_web_snapshot_t make_status_web_snapshot(
         .sd_mounted = s_board_status.sd_mounted,
         .sd_logging_enabled = logger.enabled,
         .sd_records_written = logger.records_written,
+        .sd_log_bytes = logger.log_bytes,
+        .sd_log_files = logger.log_files,
+        .sd_files_pruned = logger.files_pruned,
         .flash_bytes = s_flash_bytes,
         .uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL),
         .free_heap_bytes = heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -328,6 +334,27 @@ static void set_rgb(uint8_t red, uint8_t green, uint8_t blue)
 {
     if (s_board_status.rgb_ready) {
         (void)board_rgb_set(red, green, blue);
+    }
+}
+
+/*
+ * The accessory LED mirrors the display's colour language: blue while the
+ * feed is healthy (live or a clean empty sky), orange for anything that needs
+ * attention (connecting, stale, offline, setup).  Kept dim; it is a status
+ * light, not a lamp.
+ */
+typedef enum { LED_UNSET = 0, LED_BLUE, LED_ORANGE } led_state_t;
+
+static void set_status_led(led_state_t *current, led_state_t wanted)
+{
+    if (*current == wanted) {
+        return;
+    }
+    *current = wanted;
+    if (wanted == LED_BLUE) {
+        set_rgb(0, 4, 12);
+    } else {
+        set_rgb(12, 4, 0);
     }
 }
 
@@ -451,7 +478,7 @@ static esp_err_t enter_setup_mode(setup_reason_t reason)
         }
     }
 
-    set_rgb(8, 3, 0);
+    set_rgb(12, 4, 0);
     ESP_LOGI(TAG, "Setup mode ready on %s (%s)", s_config.ap_ssid,
              reason == SETUP_REASON_RECOVERY ? "recovery, station retrying"
              : reason == SETUP_REASON_BUTTON ? "requested by BOOT"
@@ -548,6 +575,7 @@ static setup_reason_t run_tracking_mode(void)
     TickType_t last_ui_update = 0U;
     TickType_t last_web_update = 0U;
     boot_hold_t boot_hold = {0};
+    led_state_t led = LED_UNSET;
 
     for (;;) {
         connectivity_status_t status;
@@ -567,8 +595,6 @@ static setup_reason_t run_tracking_mode(void)
                 (void)ui_diagnostic_update(&network_state);
             }
             (void)snprintf(last_ip, sizeof(last_ip), "%s", status.ip_address);
-            set_rgb(status.connected ? 0 : 8, status.connected ? 8 : 3,
-                    status.connected ? 2 : 0);
             if (!last_connected && status.connected) {
                 ESP_LOGI(TAG, "Wi-Fi connected; local address %s",
                          status.ip_address);
@@ -591,6 +617,10 @@ static setup_reason_t run_tracking_mode(void)
         airtrack_snapshot_t aircraft;
         ESP_ERROR_CHECK(adsb_client_get_snapshot(&aircraft));
         const bool snapshot_changed = aircraft.sequence != last_snapshot_sequence;
+        set_status_led(&led, status.connected &&
+                                     (aircraft.state == AIRTRACK_FEED_LIVE ||
+                                      aircraft.state == AIRTRACK_FEED_EMPTY)
+                                 ? LED_BLUE : LED_ORANGE);
         if (snapshot_changed) {
             last_snapshot_sequence = aircraft.sequence;
             const esp_err_t log_result = storage_logger_submit(&aircraft);
@@ -713,7 +743,7 @@ void app_main(void)
     /* Let the first bounded LVGL strips reach the panel before illuminating it. */
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_ERROR_CHECK(board_backlight_set(s_settings.brightness_percent));
-    set_rgb(8, 3, 0);
+    set_rgb(12, 4, 0);
 
     ESP_ERROR_CHECK(connectivity_init());
     ESP_ERROR_CHECK(adsb_client_start(&s_settings));

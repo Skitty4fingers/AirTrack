@@ -75,6 +75,10 @@ typedef struct {
     lv_obj_t *trk_arrow;
     lv_obj_t *trk_row_icon[4];
     lv_obj_t *trk_row_text[4];
+    lv_obj_t *trk_from_caption;
+    lv_obj_t *trk_from;
+    lv_obj_t *trk_to_caption;
+    lv_obj_t *trk_to;
     lv_obj_t *trk_empty;         /* container shown without a target */
     lv_obj_t *trk_empty_head;
     lv_obj_t *trk_radar_ring[4];
@@ -1023,6 +1027,45 @@ static void create_compass(lv_obj_t *parent)
     lv_obj_set_style_line_color(arrow, lv_color_hex(UI_COLOR_CYAN), 0);
     s_ui.trk_arrow = arrow;
     set_arrow_bearing(0.0f);
+
+    /* Route codes flank the gauge, one letter per line. */
+    const int32_t top = UI_COMPASS_CY - UI_COMPASS_R;
+    s_ui.trk_from_caption = create_font_label(parent, "", 4, top, 40,
+                                              &lv_font_montserrat_10,
+                                              UI_COLOR_MUTED);
+    lv_obj_set_style_text_align(s_ui.trk_from_caption, LV_TEXT_ALIGN_CENTER, 0);
+    s_ui.trk_from = create_font_label(parent, "", 4, top + 12, 40,
+                                      &lv_font_montserrat_14, UI_COLOR_TEXT);
+    lv_obj_set_style_text_align(s_ui.trk_from, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(s_ui.trk_from, -1, 0);
+    s_ui.trk_to_caption = create_font_label(parent, "", BOARD_LCD_H_RES - 44,
+                                            top, 40, &lv_font_montserrat_10,
+                                            UI_COLOR_MUTED);
+    lv_obj_set_style_text_align(s_ui.trk_to_caption, LV_TEXT_ALIGN_CENTER, 0);
+    s_ui.trk_to = create_font_label(parent, "", BOARD_LCD_H_RES - 44, top + 12,
+                                    40, &lv_font_montserrat_14, UI_COLOR_TEXT);
+    lv_obj_set_style_text_align(s_ui.trk_to, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(s_ui.trk_to, -1, 0);
+}
+
+/* "SEA" -> "S\nE\nA" for the vertical route columns. */
+static void vertical_code(char *out, size_t capacity, const char *code)
+{
+    size_t used = 0U;
+    for (size_t index = 0U; code[index] != '\0' && used + 2U < capacity; ++index) {
+        if (index > 0U) {
+            out[used++] = '\n';
+        }
+        out[used++] = code[index];
+    }
+    out[used] = '\0';
+}
+
+static const char *empty_focus_headline(char *buffer, size_t capacity,
+                                        const char *focus)
+{
+    (void)snprintf(buffer, capacity, "WAITING FOR\n%s", focus);
+    return buffer;
 }
 
 static void create_data_row(lv_obj_t *parent, size_t index, int32_t y,
@@ -1344,6 +1387,53 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
             aircraft->track_valid ? (int32_t)(aircraft->track_deg * 10.0f)
                                   : (int32_t)(aircraft->bearing_deg * 10.0f));
 
+        /* Route columns beside the gauge. */
+        if (aircraft->route_valid) {
+            char column[12];
+            vertical_code(column, sizeof(column), aircraft->route_from);
+            set_label_if_changed(s_ui.trk_from, column);
+            vertical_code(column, sizeof(column), aircraft->route_to);
+            set_label_if_changed(s_ui.trk_to, column);
+            set_label_if_changed(s_ui.trk_from_caption, "FROM");
+            set_label_if_changed(s_ui.trk_to_caption, "TO");
+        } else {
+            set_label_if_changed(s_ui.trk_from, "");
+            set_label_if_changed(s_ui.trk_to, "");
+            set_label_if_changed(s_ui.trk_from_caption, "");
+            set_label_if_changed(s_ui.trk_to_caption, "");
+        }
+        lv_obj_set_style_text_color(s_ui.trk_from, lv_color_hex(value_color), 0);
+        lv_obj_set_style_text_color(s_ui.trk_to, lv_color_hex(value_color), 0);
+
+        /* Remaining distance / ETA to the destination when known. */
+        float remaining_nm = -1.0f;
+        long eta_s = -1;
+        if (aircraft->destination_valid) {
+            float bearing_unused;
+            airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                              aircraft->destination_latitude,
+                              aircraft->destination_longitude,
+                              &remaining_nm, &bearing_unused);
+            if (aircraft->ground_speed_valid && aircraft->ground_speed_kt >= 60.0f) {
+                eta_s = (long)(remaining_nm / aircraft->ground_speed_kt * 3600.0f);
+            }
+        }
+        const bool focused = state->settings->focus_flight[0] != '\0';
+        if (focused && aircraft->route_valid && !aircraft->emergency) {
+            if (remaining_nm >= 0.0f) {
+                (void)snprintf(text, sizeof(text), "%s-%s " LV_SYMBOL_BULLET " %.0f %s to go",
+                               aircraft->route_from, aircraft->route_to,
+                               (double)(remaining_nm *
+                                        unit_scale(state->settings->distance_unit)),
+                               unit_name(state->settings->distance_unit));
+            } else {
+                (void)snprintf(text, sizeof(text), "%s-%s " LV_SYMBOL_BULLET " %s",
+                               aircraft->route_from, aircraft->route_to,
+                               aircraft->aircraft_type);
+            }
+            set_label_if_changed(s_ui.trk_meta, text);
+        }
+
         (void)snprintf(text, sizeof(text), "%s " LV_SYMBOL_BULLET " %03.0f°",
                        cardinal_name(aircraft->bearing_deg),
                        (double)aircraft->bearing_deg);
@@ -1379,7 +1469,16 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         }
         set_label_if_changed(s_ui.trk_row_text[2], text);
 
-        if (aircraft->ground_speed_valid) {
+        if (aircraft->ground_speed_valid && eta_s >= 0) {
+            if (eta_s >= 3600) {
+                (void)snprintf(text, sizeof(text), "%.0f kt " LV_SYMBOL_BULLET " ETA %ld:%02ld",
+                               (double)aircraft->ground_speed_kt, eta_s / 3600,
+                               (eta_s % 3600) / 60);
+            } else {
+                (void)snprintf(text, sizeof(text), "%.0f kt " LV_SYMBOL_BULLET " ETA %ldm",
+                               (double)aircraft->ground_speed_kt, eta_s / 60);
+            }
+        } else if (aircraft->ground_speed_valid) {
             (void)snprintf(text, sizeof(text), "%.0f kt", (double)aircraft->ground_speed_kt);
         } else {
             (void)snprintf(text, sizeof(text), "speed --");
@@ -1400,7 +1499,14 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         const bool sweeping = snapshot->state == AIRTRACK_FEED_EMPTY ||
                               snapshot->state == AIRTRACK_FEED_SEARCHING;
         set_radar_animation(sweeping);
-        set_label_if_changed(s_ui.trk_empty_head, empty_headline(state));
+        char focus_headline[32];
+        set_label_if_changed(s_ui.trk_empty_head,
+            state->settings->focus_flight[0] != '\0' &&
+                    (snapshot->state == AIRTRACK_FEED_EMPTY ||
+                     snapshot->state == AIRTRACK_FEED_SEARCHING)
+                ? empty_focus_headline(focus_headline, sizeof(focus_headline),
+                                       state->settings->focus_flight)
+                : empty_headline(state));
         lv_obj_set_style_text_color(s_ui.trk_empty_head, state_color, 0);
         for (size_t index = 0U; index < 4U; ++index) {
             lv_obj_set_style_border_color(s_ui.trk_radar_ring[index], state_color, 0);
@@ -1422,7 +1528,9 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         const char *hint;
         switch (snapshot->state) {
         case AIRTRACK_FEED_EMPTY:
-            hint = "sky is clear right now";
+            hint = state->settings->focus_flight[0] != '\0'
+                       ? "not reported in range yet"
+                       : "sky is clear right now";
             break;
         case AIRTRACK_FEED_TIME_SYNC:
             hint = "waiting for network time";
