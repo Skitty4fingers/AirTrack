@@ -1087,8 +1087,10 @@ static void create_data_row(lv_obj_t *parent, size_t index, int32_t y,
             UI_COLOR_CYAN);
     }
     s_ui.trk_row_text[index] = create_font_label(
-        parent, "--", 48, y, BOARD_LCD_H_RES - 60, &lv_font_montserrat_14,
+        parent, "--", 46, y, BOARD_LCD_H_RES - 50, &lv_font_montserrat_14,
         UI_COLOR_TEXT);
+    /* One line only; never wrap into the row below or the footer. */
+    lv_label_set_long_mode(s_ui.trk_row_text[index], LV_LABEL_LONG_CLIP);
 }
 
 static void create_radar(lv_obj_t *parent, int32_t cx, int32_t cy)

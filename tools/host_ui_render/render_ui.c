@@ -112,14 +112,14 @@ int main(int argc, char **argv)
     s_now_us = 4000 * 1000;
     snap.aircraft_count = 1;
     airtrack_aircraft_t *a = &snap.aircraft[0];
-    strcpy(a->hex, "A280A4"); strcpy(a->callsign, "SKW4017");
-    strcpy(a->registration, "N260SY"); strcpy(a->aircraft_type, "E75L");
-    strcpy(a->squawk, "5372"); strcpy(a->category, "A3");
-    a->altitude_valid = true; a->altitude_ft = 18325;
-    a->vertical_rate_valid = true; a->vertical_rate_fpm = 1792;
-    a->ground_speed_valid = true; a->ground_speed_kt = 364.8f;
-    a->track_valid = true; a->track_deg = 110.4f;
-    a->distance_nm = 1.747f; a->bearing_deg = 20.3f; a->seen_pos_s = 0.9f;
+    strcpy(a->hex, "AD9D02"); strcpy(a->callsign, "N9765M");
+    strcpy(a->registration, "N9765M"); strcpy(a->aircraft_type, "M20P");
+    strcpy(a->squawk, "1200"); strcpy(a->category, "A1");
+    a->altitude_valid = true; a->altitude_ft = 2775;
+    a->vertical_rate_valid = true; a->vertical_rate_fpm = -64;
+    a->ground_speed_valid = true; a->ground_speed_kt = 94.0f;
+    a->track_valid = true; a->track_deg = 28.0f;
+    a->distance_nm = 8.6f; a->bearing_deg = 245.0f; a->seen_pos_s = 0.3f;
 
     ui_tracking_state_t state = {
         .settings = &settings, .snapshot = &snap, .ssid = "CooperNet",
@@ -130,16 +130,24 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/02_live.ppm", out_dir);
     render_and_save(path);
 
-    /* With route enrichment. */
-    a->route_valid = true; strcpy(a->route_from, "SEA"); strcpy(a->route_to, "LAX");
-    a->destination_valid = true; a->destination_latitude = 33.9425; a->destination_longitude = -118.408;
+    /* Nearest mode with route enrichment: a different airliner. */
+    strcpy(a->hex, "A6D3E1"); strcpy(a->callsign, "ASA450"); strcpy(a->registration, "N949AK");
+    strcpy(a->aircraft_type, "B39M"); a->altitude_ft = 10075; a->vertical_rate_fpm = 1344;
+    a->ground_speed_kt = 303.0f; a->track_deg = 53.0f; a->distance_nm = 4.1f; a->bearing_deg = 331.0f;
+    a->route_valid = true; strcpy(a->route_from, "SEA"); strcpy(a->route_to, "ANC");
+    a->destination_valid = true; a->destination_latitude = 61.1744; a->destination_longitude = -149.996;
     a->latitude = 47.40; a->longitude = -121.95;
     ui_diagnostic_show_tracking(&state);
     snprintf(path, sizeof(path), "%s/02b_route.ppm", out_dir);
     render_and_save(path);
 
-    /* Focused on one flight. */
-    strcpy(settings.focus_flight, "SKW4017");
+    /* Focused on one flight (different aircraft, far along its route). */
+    strcpy(settings.focus_flight, "UAL205");
+    strcpy(a->hex, "A2C1F0"); strcpy(a->callsign, "UAL205"); strcpy(a->registration, "N37267");
+    strcpy(a->aircraft_type, "B738"); a->altitude_ft = 36000; a->vertical_rate_fpm = 0;
+    a->ground_speed_kt = 452.0f; a->track_deg = 96.0f; a->distance_nm = 12.4f; a->bearing_deg = 118.0f;
+    strcpy(a->route_from, "SEA"); strcpy(a->route_to, "ORD");
+    a->destination_latitude = 41.9742; a->destination_longitude = -87.9073;
     ui_diagnostic_show_tracking(&state);
     snprintf(path, sizeof(path), "%s/02c_focus.ppm", out_dir);
     render_and_save(path);
@@ -149,6 +157,10 @@ int main(int argc, char **argv)
     render_and_save(path);
     snap.aircraft_count = 1; snap.state = AIRTRACK_FEED_LIVE;
     settings.focus_flight[0] = 0; a->route_valid = false; a->destination_valid = false;
+    /* restore the GA-style example for the remaining scenarios */
+    strcpy(a->hex, "A280A4"); strcpy(a->callsign, "SKW4017"); strcpy(a->registration, "N260SY");
+    strcpy(a->aircraft_type, "E75L"); a->altitude_ft = 18325; a->vertical_rate_fpm = 1792;
+    a->ground_speed_kt = 364.8f; a->track_deg = 110.4f; a->distance_nm = 1.747f; a->bearing_deg = 20.3f;
 
     /* Long callsign, descending, km, far away, stale. */
     strcpy(a->callsign, "N12345AB"); a->vertical_rate_fpm = -2432;
