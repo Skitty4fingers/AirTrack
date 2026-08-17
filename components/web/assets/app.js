@@ -43,7 +43,7 @@
       while (tb.firstChild) tb.removeChild(tb.firstChild);
       l.forEach(function (a) {
         var tr = document.createElement('tr');
-        [name(a), a.type || '', dist(a.distance_nm), p3(a.bearing_deg) + '°', alt(a), a.speed_valid ? a.ground_speed_kt.toFixed(0) + ' kt' : '--', a.squawk || ''].forEach(function (v) {
+        [name(a), a.type || '', a.route_from ? a.route_from + '→' + a.route_to : '', dist(a.distance_nm), p3(a.bearing_deg) + '°', alt(a), a.speed_valid ? a.ground_speed_kt.toFixed(0) + ' kt' : '--', a.squawk || ''].forEach(function (v) {
           var td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
         if (a.emergency) tr.className = 'emergency';
         tb.appendChild(tr);

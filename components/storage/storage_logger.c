@@ -24,6 +24,9 @@
 #define LOG_GATE_TIMEOUT_MS 5000U
 #define LOG_READ_GATE_TIMEOUT_MS 2000U
 #define SIGHTING_WINDOW_MS (30U * 60U * 1000U)
+/* Hold a sighting this long for a callsign whose route lookup is pending, so
+ * the record can carry origin/destination when the enrichment lands. */
+#define ROUTE_GRACE_MS 20000U
 #define SEEN_ENTRIES 32U
 #define PRUNE_CHECK_BYTES (256U * 1024U)
 #define VALID_TIME_EPOCH 1704067200L
@@ -33,6 +36,8 @@ static const char *TAG = "storage";
 typedef struct {
     char hex[16];
     TickType_t logged_at;
+    bool pending;          /* seen but not yet written (waiting for route) */
+    TickType_t first_seen;
 } seen_entry_t;
 
 typedef struct {
@@ -317,31 +322,58 @@ static esp_err_t append_record(const char *name, const airtrack_snapshot_t *snap
     return flushed && close_result == 0 ? ESP_OK : ESP_FAIL;
 }
 
-static bool recently_logged(seen_entry_t *seen, const char *hex, TickType_t now)
+static seen_entry_t *seen_slot(seen_entry_t *seen, const char *hex, TickType_t now)
 {
     seen_entry_t *slot = NULL;
     for (size_t index = 0U; index < SEEN_ENTRIES; ++index) {
         if (seen[index].hex[0] != '\0' && strcmp(seen[index].hex, hex) == 0) {
-            if ((TickType_t)(now - seen[index].logged_at) <
-                pdMS_TO_TICKS(SIGHTING_WINDOW_MS)) {
-                return true;
-            }
-            slot = &seen[index];
-            break;
+            return &seen[index];
         }
         if (slot == NULL &&
             (seen[index].hex[0] == '\0' ||
-             (TickType_t)(now - seen[index].logged_at) >=
-                 pdMS_TO_TICKS(SIGHTING_WINDOW_MS))) {
+             (!seen[index].pending &&
+              (TickType_t)(now - seen[index].logged_at) >=
+                  pdMS_TO_TICKS(SIGHTING_WINDOW_MS)))) {
             slot = &seen[index];
         }
     }
     if (slot == NULL) {
         slot = &seen[0]; /* all busy and fresh: reuse the first, bounded */
     }
+    memset(slot, 0, sizeof(*slot));
     (void)snprintf(slot->hex, sizeof(slot->hex), "%s", hex);
-    slot->logged_at = now;
-    return false;
+    slot->pending = true;
+    slot->first_seen = now;
+    return slot;
+}
+
+/*
+ * Decide whether this aircraft gets a sighting record now.  A new aircraft
+ * with a callsign but no route yet is held for ROUTE_GRACE_MS so the record
+ * can include FROM/TO once the lookup completes; anything else is written on
+ * first sight and then not again within the window.
+ */
+static bool should_log_sighting(seen_entry_t *seen,
+                                const airtrack_aircraft_t *aircraft,
+                                TickType_t now)
+{
+    seen_entry_t *entry = seen_slot(seen, aircraft->hex, now);
+    if (!entry->pending) {
+        if ((TickType_t)(now - entry->logged_at) < pdMS_TO_TICKS(SIGHTING_WINDOW_MS)) {
+            return false;
+        }
+        entry->pending = true;
+        entry->first_seen = now;
+    }
+    const bool route_pending = aircraft->callsign[0] != '\0' &&
+                               !aircraft->route_valid;
+    if (route_pending &&
+        (TickType_t)(now - entry->first_seen) < pdMS_TO_TICKS(ROUTE_GRACE_MS)) {
+        return false;
+    }
+    entry->pending = false;
+    entry->logged_at = now;
+    return true;
 }
 
 static void logger_task(void *argument)
@@ -379,7 +411,7 @@ static void logger_task(void *argument)
         bool write_sighting[AIRTRACK_MAX_AIRCRAFT] = {false};
         bool any = false;
         for (size_t index = 0U; index < snapshot.aircraft_count; ++index) {
-            if (!recently_logged(seen, snapshot.aircraft[index].hex, now)) {
+            if (should_log_sighting(seen, &snapshot.aircraft[index], now)) {
                 write_sighting[index] = true;
                 any = true;
             }

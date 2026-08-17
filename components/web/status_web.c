@@ -617,6 +617,15 @@ static esp_err_t send_aircraft_row(httpd_req_t *request,
         result = send_html_escaped(request, aircraft->aircraft_type);
     }
     if (result == ESP_OK) {
+        result = send_html_chunk(request, "</td><td>");
+    }
+    if (result == ESP_OK && aircraft->route_valid) {
+        char route[16];
+        (void)snprintf(route, sizeof(route), "%s&rarr;%s", aircraft->route_from,
+                       aircraft->route_to);
+        result = send_html_chunk(request, route);
+    }
+    if (result == ESP_OK) {
         char cells[160];
         char altitude[24];
         if (aircraft->ground) {
