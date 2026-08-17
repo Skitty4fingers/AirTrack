@@ -15,6 +15,8 @@
 #include "esp_random.h"
 
 #define SETUP_WEB_MAX_FORM_BYTES 768U
+#define SETUP_WEB_DEFAULT_LATITUDE_E7 AIRTRACK_PLACEHOLDER_LATITUDE_E7
+#define SETUP_WEB_DEFAULT_LONGITUDE_E7 AIRTRACK_PLACEHOLDER_LONGITUDE_E7
 #define SETUP_WEB_CONTENT_TYPE_MAX_BYTES 63U
 #define SETUP_WEB_CSRF_RANDOM_BYTES 16U
 #define SETUP_WEB_CSRF_TOKEN_BYTES (SETUP_WEB_CSRF_RANDOM_BYTES * 2U)
@@ -180,22 +182,25 @@ static const char PAGE_FORM_AFTER_SSID[] =
     "<p class=hint>Leave blank only for an open network; protected networks "
     "need 8 to 63 characters. A saved password is never shown here, so re-enter "
     "it when keeping the same network.</p></section>"
-    "<section class=card><h2>Tracking location</h2>"
-    "<p class=hint style=\"margin:0 0 4px\">The fixed position of this display, "
-    "used only to request nearby aircraft from adsb.fi. You can refine it later "
-    "from the dashboard, which can also read your phone's location.</p>"
+    "<section class=card><h2>Tracking location <span class=manual style=\"font-size:.85rem\">optional</span></h2>"
+    "<p class=hint style=\"margin:0 0 4px\">Where this display lives, used only to "
+    "ask adsb.fi for nearby aircraft. Leave both fields blank to start with "
+    "Seattle&ndash;Tacoma International (SEA, 47.4502 / &minus;122.3088) as a "
+    "placeholder; you can set the real position any time from the dashboard "
+    "at the address shown on the LCD &mdash; it can also read your phone's "
+    "location.</p>"
     "<div class=two><div><label for=latitude>Latitude</label>"
     "<input id=latitude name=latitude type=number step=any min=-90 max=90 "
-    "placeholder=37.6213 required";
+    "placeholder=47.4502";
 
 static const char PAGE_FORM_AFTER_LATITUDE[] =
     "></div><div><label for=longitude>Longitude</label>"
     "<input id=longitude name=longitude type=number step=any min=-180 max=180 "
-    "placeholder=-122.3790 required";
+    "placeholder=-122.3088";
 
 static const char PAGE_FORM_AFTER_LONGITUDE[] =
     "></div></div><label for=radius>Search radius (nautical miles)</label>"
-    "<input id=radius name=radius type=number min=1 max=250 required value=";
+    "<input id=radius name=radius type=number min=1 max=250 value=";
 
 /* Advanced options are rendered with printf-style placeholders resolved by
  * send_options_section(); every value is a bounded integer or enum. */
@@ -796,11 +801,20 @@ static esp_err_t parse_wifi_form(const char *body, size_t body_length,
         offset += pair_length + (ampersand != NULL ? 1U : 0U);
     }
 
-    if (!have_ssid || !have_password || !have_csrf_token || !have_latitude ||
-        !have_longitude || !have_radius ||
+    if (!have_ssid || !have_password || !have_csrf_token ||
         !valid_csrf_token_text(csrf_token)) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* Location is optional at setup: an empty pair keeps the saved position
+     * or, on a fresh device, starts at Seattle-Tacoma International so the
+     * display shows traffic immediately.  One coordinate without the other
+     * is a mistake, not a default. */
+    const bool latitude_blank = !have_latitude || latitude[0] == '\0';
+    const bool longitude_blank = !have_longitude || longitude[0] == '\0';
+    if (latitude_blank != longitude_blank) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const bool use_default_location = latitude_blank && longitude_blank;
     const size_t ssid_length = strlen(ssid);
     const size_t password_length = strlen(password);
     if (ssid_length == 0U || ssid_length > SETUP_WEB_SSID_MAX_BYTES ||
@@ -810,24 +824,38 @@ static esp_err_t parse_wifi_form(const char *body, size_t body_length,
         !valid_utf8((const unsigned char *)password, password_length)) {
         return ESP_ERR_INVALID_ARG;
     }
-    errno = 0;
-    char *latitude_end = NULL;
-    char *longitude_end = NULL;
-    const double latitude_value = strtod(latitude, &latitude_end);
-    const double longitude_value = strtod(longitude, &longitude_end);
-    unsigned long radius_value = 0UL;
-    if (errno != 0 || latitude_end == latitude || *latitude_end != '\0' ||
-        longitude_end == longitude || *longitude_end != '\0' ||
-        !parse_bounded_ulong(radius, 1UL, 250UL, &radius_value) ||
-        !isfinite(latitude_value) || !isfinite(longitude_value) ||
-        latitude_value < -90.0 || latitude_value > 90.0 ||
-        longitude_value < -180.0 || longitude_value > 180.0) {
+    airtrack_settings_t *settings = &submission->settings;
+    unsigned long radius_value = settings->radius_nm;
+    if (have_radius && radius[0] != '\0' &&
+        !parse_bounded_ulong(radius, 1UL, 250UL, &radius_value)) {
         return ESP_ERR_INVALID_ARG;
     }
-    airtrack_settings_t *settings = &submission->settings;
-    settings->location_configured = true;
-    settings->latitude_e7 = (int32_t)llround(latitude_value * 10000000.0);
-    settings->longitude_e7 = (int32_t)llround(longitude_value * 10000000.0);
+    if (radius_value < 1UL || radius_value > 250UL) {
+        radius_value = 25UL;
+    }
+    if (use_default_location) {
+        if (!settings->location_configured) {
+            settings->location_configured = true;
+            settings->latitude_e7 = SETUP_WEB_DEFAULT_LATITUDE_E7;
+            settings->longitude_e7 = SETUP_WEB_DEFAULT_LONGITUDE_E7;
+        }
+    } else {
+        errno = 0;
+        char *latitude_end = NULL;
+        char *longitude_end = NULL;
+        const double latitude_value = strtod(latitude, &latitude_end);
+        const double longitude_value = strtod(longitude, &longitude_end);
+        if (errno != 0 || latitude_end == latitude || *latitude_end != '\0' ||
+            longitude_end == longitude || *longitude_end != '\0' ||
+            !isfinite(latitude_value) || !isfinite(longitude_value) ||
+            latitude_value < -90.0 || latitude_value > 90.0 ||
+            longitude_value < -180.0 || longitude_value > 180.0) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->location_configured = true;
+        settings->latitude_e7 = (int32_t)llround(latitude_value * 10000000.0);
+        settings->longitude_e7 = (int32_t)llround(longitude_value * 10000000.0);
+    }
     settings->radius_nm = (uint16_t)radius_value;
 
     /* Optional advanced fields: absent keys keep the current values.  A

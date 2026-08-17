@@ -13,6 +13,10 @@ extern "C" {
 #define AIRTRACK_HOSTNAME_MAX_LENGTH 24U
 /* Callsign, registration, or ICAO hex of a single flight to follow. */
 #define AIRTRACK_FOCUS_MAX_LENGTH 8U
+/* Placeholder location used when a device is set up without coordinates:
+ * Seattle-Tacoma International (SEA). */
+#define AIRTRACK_PLACEHOLDER_LATITUDE_E7 474502000
+#define AIRTRACK_PLACEHOLDER_LONGITUDE_E7 (-1223088000)
 /* POSIX TZ rule, e.g. "PST8PDT,M3.2.0,M11.1.0"; empty means UTC. */
 #define AIRTRACK_TZ_MAX_LENGTH 47U
 

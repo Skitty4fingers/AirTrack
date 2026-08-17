@@ -756,6 +756,12 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
         result = send_html_chunk(request,
             "<div class=banner>Enter this display's fixed location under "
             "<b>Location</b> and save to start tracking.</div>");
+    } else if (snapshot->settings.latitude_e7 == AIRTRACK_PLACEHOLDER_LATITUDE_E7 &&
+               snapshot->settings.longitude_e7 == AIRTRACK_PLACEHOLDER_LONGITUDE_E7) {
+        result = send_html_chunk(request,
+            "<div class=banner>Tracking around <b>Seattle&ndash;Tacoma International</b> "
+            "(the setup placeholder). Enter this display's real position under "
+            "<b>Location</b> &mdash; or use the location button &mdash; and save.</div>");
     } else if (snapshot->settings.focus_flight[0] != '\0') {
         result = send_html_chunk(request,
             "<div class=banner>Following <b>");

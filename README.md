@@ -54,6 +54,10 @@ Changes in 1.5.0:
   a new password is generated), then restarts into setup mode. Requires the
   CSRF token and typing `RESET` (`POST /api/v1/factory-reset`).
 - Settings schema 4 (adds the sighting window); older records migrate.
+- Setup portal restyled to match the dashboard, and the tracking location is
+  now optional there: leave it blank and the device starts around
+  Seattle&ndash;Tacoma International (SEA) as a placeholder, with a dashboard
+  banner reminding you to set the real position.
 
 Changes in 1.4.0:
 
