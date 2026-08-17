@@ -58,6 +58,7 @@ static httpd_handle_t s_server;
 static status_web_snapshot_storage_t s_snapshot;
 static status_web_save_settings_cb_t s_save_settings;
 static status_web_reboot_cb_t s_reboot;
+static status_web_factory_reset_cb_t s_factory_reset;
 static void *s_user_context;
 static char s_csrf_token[STATUS_WEB_CSRF_BYTES + 1U];
 static portMUX_TYPE s_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -1101,6 +1102,29 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
     }
     if (result == ESP_OK) {
         const bool logging = settings->logging_mode != AIRTRACK_LOGGING_OFF;
+        static const struct { uint16_t minutes; const char *label; } windows[] = {
+            {30U, "30 minutes"}, {60U, "hour"}, {360U, "6 hours"}, {1440U, "day"},
+        };
+        char window_options[320] = "";
+        size_t used = 0U;
+        bool matched = false;
+        for (size_t index = 0U; index < sizeof(windows) / sizeof(windows[0]); ++index) {
+            const bool selected = settings->sighting_window_min == windows[index].minutes;
+            matched = matched || selected;
+            const int written = snprintf(window_options + used, sizeof(window_options) - used,
+                "<option value=%u%s>%s</option>", (unsigned)windows[index].minutes,
+                selected ? " selected" : "", windows[index].label);
+            if (written < 0 || (size_t)written >= sizeof(window_options) - used) {
+                break;
+            }
+            used += (size_t)written;
+        }
+        if (!matched) {
+            (void)snprintf(window_options + used, sizeof(window_options) - used,
+                           "<option value=%u selected>%u minutes</option>",
+                           (unsigned)settings->sighting_window_min,
+                           (unsigned)settings->sighting_window_min);
+        }
         char log_usage[96];
         (void)snprintf(log_usage, sizeof(log_usage),
                        "Using %.1f MiB in %lu file%s of the %u MiB cap &middot; %lu pruned",
@@ -1117,14 +1141,17 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
             "<p class=sub id=sdsub>%s</p></div><label class=switch>"
             "<input type=checkbox name=logging value=1%s><i></i></label></div>"
             "<p class=hint>Every distinct aircraft that enters the tracked set is "
-            "written once per 30 minutes as NDJSON under /airtrack/logs on a FAT32 "
-            "card. Nothing is written when logging is off.</p>"
+            "written as NDJSON under /airtrack/logs on a FAT32 card, once per "
+            "window below. Nothing is written when logging is off.</p>"
+            "<label class=field>Log each aircraft at most once per"
+            "<select name=log_window>%s</select></label>"
             "<div class=two><label class=field>Size cap (MiB)"
             "<input name=retention type=number min=8 max=4096 value=%u></label>"
             "<label class=field>Keep days<input type=number value=%u disabled></label></div>"
             "<p class=hint id=logusage>%s</p>"
             "<div id=logs class=logs><div class=logbar><b>Log files</b>"
-            "<button type=button id=logrefresh class=ghost>Refresh</button></div>"
+            "<span><button type=button id=logclear class=\"ghost danger\">Clear log</button> "
+            "<button type=button id=logrefresh class=ghost>Refresh</button></span></div>"
             "<div id=loglist class=loglist>Loading&hellip;</div>"
             "<div id=logview hidden><div class=logbar><b id=logname></b>"
             "<a id=logdl class=ghost download>Download</a></div>"
@@ -1138,6 +1165,7 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
             !snapshot->sd_mounted ? "No SD card detected"
             : logging ? "Enabled" : "Disabled &middot; card ready",
             logging ? " checked" : "",
+            window_options,
             (unsigned)settings->retention_mib,
             (unsigned)settings->retention_days,
             log_usage);
@@ -1225,9 +1253,12 @@ static esp_err_t send_system_card(httpd_req_t *request,
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request,
-            "\"><button class=ghost type=submit>Restart device</button></form>"
+            "\"><button class=ghost type=submit>Restart device</button> "
+            "<button class=\"ghost danger\" type=button id=factory>Factory reset</button></form>"
             "</div><p class=hint>Wi-Fi credentials are changed only from the "
-            "isolated setup hotspot: hold BOOT for five seconds.</p></section>");
+            "isolated setup hotspot: hold BOOT for five seconds. Factory reset "
+            "erases the SD sighting log, Wi-Fi, location and every option, "
+            "generates a new setup hotspot password, and restarts into setup mode.</p></section>");
     }
     return result;
 }
@@ -1442,6 +1473,7 @@ static esp_err_t config_api_handler(httpd_req_t *request)
         "\"poll_interval_s\":%u,\"max_position_age_s\":%u,"
         "\"include_ground\":%s,\"distance_unit\":\"%s\","
         "\"brightness_percent\":%u,\"logging_mode\":%u,\"retention_mib\":%u,"
+        "\"sighting_window_min\":%u,"
         "\"retention_days\":%u,\"focus\":\"%s\",\"night_enabled\":%s,"
         "\"night_from\":\"%02u:%02u\",\"night_to\":\"%02u:%02u\","
         "\"night_brightness_percent\":%u,\"night_led_off\":%s,"
@@ -1458,6 +1490,7 @@ static esp_err_t config_api_handler(httpd_req_t *request)
         (unsigned)settings->brightness_percent,
         (unsigned)settings->logging_mode,
         (unsigned)settings->retention_mib,
+        (unsigned)settings->sighting_window_min,
         (unsigned)settings->retention_days,
         settings->focus_flight,
         settings->night_enabled ? "true" : "false",
@@ -1591,6 +1624,8 @@ typedef struct {
     bool have_units;
     bool have_focus;
     bool have_retention;
+    bool have_log_window;
+    bool have_confirm;
     bool have_night_from;
     bool have_night_to;
     bool have_night_brightness;
@@ -1607,6 +1642,8 @@ typedef struct {
     char units[4];
     char focus[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
     char retention[8];
+    char log_window[8];
+    char confirm[8];
     char night_from[8];
     char night_to[8];
     char night_brightness[8];
@@ -1659,6 +1696,8 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("units", form->units, have_units)
         FIELD("focus", form->focus, have_focus)
         FIELD("retention", form->retention, have_retention)
+        FIELD("log_window", form->log_window, have_log_window)
+        FIELD("confirm", form->confirm, have_confirm)
         FIELD("night_from", form->night_from, have_night_from)
         FIELD("night_to", form->night_to, have_night_to)
         FIELD("night_brightness", form->night_brightness, have_night_brightness)
@@ -1761,6 +1800,12 @@ static esp_err_t apply_settings_form(const settings_form_t *form,
             return ESP_ERR_INVALID_ARG;
         }
         settings->retention_mib = (uint16_t)numeric;
+    }
+    if (form->have_log_window) {
+        if (!parse_bounded_ulong(form->log_window, 5UL, 1440UL, &numeric)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        settings->sighting_window_min = (uint16_t)numeric;
     }
     if (form->have_night_from || form->have_night_to || form->have_night_brightness) {
         /* The night section is posted as a whole; checkboxes absent = off. */
@@ -2216,6 +2261,72 @@ static esp_err_t log_file_handler(httpd_req_t *request)
     return result;
 }
 
+static esp_err_t logs_clear_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    settings_form_t form;
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, &form);
+    }
+    memset(body, 0, sizeof(body));
+    if (result != ESP_OK || !form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    uint32_t deleted = 0U;
+    result = storage_logger_clear(&deleted);
+    if (result == ESP_ERR_NOT_FOUND) {
+        return send_form_result(request, false, "409 Conflict", "No SD card.");
+    }
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "500 Internal Server Error",
+                                "Some log files could not be deleted.");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
+static esp_err_t factory_reset_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    if (s_factory_reset == NULL) {
+        return send_form_result(request, false, "503 Service Unavailable",
+                                "Factory reset is not available.");
+    }
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    settings_form_t form;
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, &form);
+    }
+    memset(body, 0, sizeof(body));
+    if (result != ESP_OK || !form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    if (!form.have_confirm || strcmp(form.confirm, "RESET") != 0) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Type RESET to confirm.");
+    }
+    result = s_factory_reset(s_user_context);
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "500 Internal Server Error",
+                                "Reset failed; nothing was changed.");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
 static esp_err_t favicon_handler(httpd_req_t *request)
 {
     const status_web_snapshot_storage_t snapshot = copy_snapshot();
@@ -2269,6 +2380,18 @@ static const httpd_uri_t URI_REBOOT = {
     .handler = reboot_handler,
 };
 
+static const httpd_uri_t URI_FACTORY_RESET = {
+    .uri = "/api/v1/factory-reset",
+    .method = HTTP_POST,
+    .handler = factory_reset_handler,
+};
+
+static const httpd_uri_t URI_LOGS_CLEAR = {
+    .uri = "/api/v1/logs/clear",
+    .method = HTTP_POST,
+    .handler = logs_clear_handler,
+};
+
 static const httpd_uri_t URI_LOGS = {
     .uri = "/api/v1/logs",
     .method = HTTP_GET,
@@ -2302,6 +2425,7 @@ static const httpd_uri_t URI_APP_CSS = {
 esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
                            status_web_save_settings_cb_t save_settings,
                            status_web_reboot_cb_t reboot,
+                           status_web_factory_reset_cb_t factory_reset,
                            void *user_context)
 {
     status_web_snapshot_storage_t normalized;
@@ -2325,13 +2449,14 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
     replace_snapshot(&normalized);
     s_save_settings = save_settings;
     s_reboot = reboot;
+    s_factory_reset = factory_reset;
     s_user_context = user_context;
     make_csrf_token();
 
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
     server_config.stack_size = 10240U;
     server_config.max_open_sockets = 3U;
-    server_config.max_uri_handlers = 12U;
+    server_config.max_uri_handlers = 14U;
     server_config.uri_match_fn = httpd_uri_match_wildcard;
     server_config.lru_purge_enable = true;
     server_config.recv_wait_timeout = 5U;
@@ -2343,6 +2468,7 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         clear_snapshot();
         s_save_settings = NULL;
         s_reboot = NULL;
+        s_factory_reset = NULL;
         s_user_context = NULL;
         memset(s_csrf_token, 0, sizeof(s_csrf_token));
         xSemaphoreGive(lock);
@@ -2357,6 +2483,8 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_SETTINGS,
         &URI_REBOOT,
         &URI_LOGS,
+        &URI_LOGS_CLEAR,
+        &URI_FACTORY_RESET,
         &URI_LOG_FILE,
         &URI_FAVICON,
         &URI_APP_JS,
@@ -2371,6 +2499,7 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
                 clear_snapshot();
                 s_save_settings = NULL;
         s_reboot = NULL;
+        s_factory_reset = NULL;
                 s_user_context = NULL;
                 memset(s_csrf_token, 0, sizeof(s_csrf_token));
             } else {
@@ -2429,6 +2558,7 @@ esp_err_t status_web_stop(void)
         clear_snapshot();
         s_save_settings = NULL;
         s_reboot = NULL;
+        s_factory_reset = NULL;
         s_user_context = NULL;
         memset(s_csrf_token, 0, sizeof(s_csrf_token));
         ESP_LOGI(TAG, "LAN status server stopped");

@@ -58,6 +58,9 @@ typedef esp_err_t (*status_web_save_settings_cb_t)(
 /** Schedule a controlled restart requested from the dashboard. */
 typedef esp_err_t (*status_web_reboot_cb_t)(void *user_context);
 
+/** Erase logs and every setting, then restart (dashboard factory reset). */
+typedef esp_err_t (*status_web_factory_reset_cb_t)(void *user_context);
+
 /**
  * Start the HTTP server and copy its initial status snapshot.
  *
@@ -67,6 +70,7 @@ typedef esp_err_t (*status_web_reboot_cb_t)(void *user_context);
 esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
                            status_web_save_settings_cb_t save_settings,
                            status_web_reboot_cb_t reboot,
+                           status_web_factory_reset_cb_t factory_reset,
                            void *user_context);
 
 /** Atomically replace the status snapshot used by subsequent requests. */

@@ -1,4 +1,4 @@
-# AirTrack 1.4.0 release checklist
+# AirTrack 1.5.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,10 +10,14 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,766,448 bytes (both 3,904 KiB OTA
+- [x] Image is below the 3.5 MiB gate: 1,770,640 bytes (both 3,904 KiB OTA
   slots retain 56 percent free).
 - [x] Artifact SHA-256:
-  `0a90af784e77390cd3c3c9e54bb68ddb5af33a1771a76924bee91902d0ab2606`.
+  `88c220a7ef79462f259265d15c097799ebb12d9d80cbbefb44ff51b1996fad75`.
+- [x] 1.5.0 on-target: sighting-window select saved (30 -> 1440 -> 30),
+  `POST /api/v1/logs/clear` removed the day file (bad token refused), and
+  `POST /api/v1/factory-reset` without the typed word was refused with the
+  device staying up.
 - [x] 1.4.0 on-target: night mode reported active inside a test window and
   inactive after restoring 23:00-07:00 America/Los_Angeles; a sighting for
   UAL2058 was held and logged with `route:"IAD-IAH"`.
@@ -62,6 +66,9 @@ the physical device, its real fixed location, or elapsed soak time.
   selection, rejected password, and successful recovery from a phone.
 - [ ] Disconnect Internet while retaining Wi-Fi and verify stale/offline state
   without exposing the setup portal on the station LAN.
+- [ ] Run Factory reset from the dashboard on a bench unit and confirm it
+  returns to setup mode with a new hotspot password and an empty SD log
+  directory (not exercised on the connected unit to preserve its settings).
 - [ ] With the night window set to include the current local time, confirm
   the panel dims and the LED goes dark; restore the real window afterwards.
 - [ ] Confirm the accessory LED is blue while tracking and orange in setup or
@@ -77,7 +84,7 @@ the physical device, its real fixed location, or elapsed soak time.
 ## Deliberately deferred from 1.0.0
 
 - Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.4.0 updates use native USB.
+  but 1.5.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.

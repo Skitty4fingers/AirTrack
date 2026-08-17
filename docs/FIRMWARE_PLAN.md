@@ -340,7 +340,8 @@ for five seconds opens the isolated WPA2 setup portal for Wi-Fi changes.
 | `POST /api/v1/provision` | Test and commit Wi-Fi plus initial tracker settings |
 | `GET /api/v1/logs` | List log files (name, bytes) and total usage |
 | `GET /api/v1/logs/{name}` | Tail (`?tail=bytes`, default 48 KiB) or download (`?download=1`) a validated log filename |
-| `POST /api/v1/factory-reset` | Deferred: authenticated confirmed settings erase |
+| `POST /api/v1/factory-reset` | Erase logs and all settings, restart into setup (CSRF + typed RESET) |
+| `POST /api/v1/logs/clear` | Delete every sighting log file (CSRF) |
 | `POST /api/v1/ota` | Deferred: signed firmware upload with rollback |
 
 Static assets are dependency-free, built ahead of time, gzip-compressed, and embedded in flash. No CDN or Internet-hosted asset is required to configure the device. The dashboard polls bounded status/job endpoints every 2-5 seconds; v1 does not keep WebSocket or SSE connections open.
@@ -376,7 +377,7 @@ Backlight behavior:
 - Absence, corruption, unsupported exFAT, or a full card is non-fatal.
 - V1 detects I/O failure/removal, closes logging, and marks SD degraded; arbitrary hot reinsertion is not supported until reboot because the card must be initialized before LCD traffic.
 - Log normalized sightings as append-only UTF-8 NDJSON under `/sd/airtrack/logs/`; never archive raw API payloads.
-- Default logging is off. When on, every distinct aircraft entering the tracked set is written once per 30-minute window ("sighting"); the periodic mode also writes a "heartbeat" for the nearest aircraft every `log_heartbeat_s`.
+- Default logging is off. When on, every distinct aircraft entering the tracked set is written once per configurable window (`sighting_window_min`: 30 min, hourly, 6 h, or daily; "sighting"); the periodic mode also writes a "heartbeat" for the nearest aircraft every `log_heartbeat_s`.
 - Records carry hex, callsign, registration, type, route, distance/bearing, altitude, speed, track, vertical rate, squawk, and emergency.
 - Before SNTP, write `unsynced-<boot-count>.ndjson` with `ts:null` and monotonic time. Once synchronized, use `YYYY-MM-DD-00.ndjson`.
 - Flush state transitions immediately; flush ordinary heartbeats within 30 seconds and `fsync` at least every 60 seconds.

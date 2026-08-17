@@ -33,7 +33,7 @@ typedef struct {
 
 /*
  * Sighting log.  With logging enabled, every distinct aircraft that enters
- * the tracked set is written once per STORAGE_SIGHTING_WINDOW (30 minutes),
+ * the tracked set is written once per settings->sighting_window_min,
  * and AIRTRACK_LOGGING_PERIODIC additionally records the nearest aircraft
  * every log_heartbeat_s.  Files are `YYYY-MM-DD.ndjson` (UTC) or
  * `unsynced.ndjson` before time sync; the total is kept under
@@ -62,6 +62,12 @@ esp_err_t storage_logger_list(storage_log_file_t *files, size_t capacity,
 esp_err_t storage_logger_read(const char *name, size_t offset, void *buffer,
                               size_t capacity, size_t *read_bytes,
                               size_t *file_size);
+
+/**
+ * Delete every log file this component owns (strictly matching names only)
+ * and reset the usage counters.  Safe from any task; takes the SPI gate.
+ */
+esp_err_t storage_logger_clear(uint32_t *deleted_files);
 
 /** True when name has the exact shape of a log file this component writes. */
 bool storage_logger_valid_name(const char *name);

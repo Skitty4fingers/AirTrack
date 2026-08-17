@@ -125,6 +125,14 @@
     }).catch(function () { t('logname', name + ' — could not load'); });
   }
   var lr = $('logrefresh'); if (lr) lr.onclick = loadLogs;
+  var lc = $('logclear');
+  if (lc) lc.onclick = function () {
+    if (!confirm('Delete every sighting log file on the SD card?')) return;
+    var f = document.createElement('form'); f.action = '/api/v1/logs/clear';
+    var tok = document.querySelector('#cfg [name=csrf_token]');
+    var i = document.createElement('input'); i.name = 'csrf_token'; i.value = tok ? tok.value : ''; f.appendChild(i);
+    post(f, function (r) { toast(r.ok ? 'Log cleared' : 'Not cleared: ' + (r.j.error || 'rejected'), r.ok ? 'ok' : 'bad'); current = null; var v = $('logview'); if (v) v.hidden = true; loadLogs(); tick(); });
+  };
   loadLogs();
   function get(u, cb) { fetch(u, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(cb).catch(function () {}); }
   function tick() { get('/api/v1/aircraft', air); get('/api/v1/status', st); }
@@ -177,6 +185,16 @@
     e.preventDefault(); if (!confirm('Restart AirTrack now?')) return;
     post(rb, function (r) { toast(r.ok ? 'Restarting…' : 'Restart rejected', r.ok ? 'ok' : 'bad'); });
   };
+  var fr = $('factory');
+  if (fr) fr.onclick = function () {
+    var word = prompt('This erases the SD sighting log, Wi-Fi, location and all options, and returns AirTrack to a brand-new device (new setup hotspot password, shown on the LCD).\n\nType RESET to continue.');
+    if (word === null) return;
+    var f = document.createElement('form'); f.action = '/api/v1/factory-reset';
+    var tok = document.querySelector('#rb [name=csrf_token]');
+    [['csrf_token', tok ? tok.value : ''], ['confirm', word.trim().toUpperCase()]].forEach(function (kv) { var i = document.createElement('input'); i.name = kv[0]; i.value = kv[1]; f.appendChild(i); });
+    post(f, function (r) { toast(r.ok ? 'Factory reset — restarting into setup mode. Look at the LCD for the new hotspot.' : 'Not reset: ' + (r.j.error || 'rejected'), r.ok ? 'ok' : 'bad'); });
+  };
+
   /* Sidebar highlight follows the section in view. */
   var links = Array.prototype.slice.call(document.querySelectorAll('.side nav a'));
   if ('IntersectionObserver' in window && links.length) {

@@ -78,3 +78,4 @@ footer{text-align:center;color:var(--muted);font-size:.9rem;padding:16px}
 .loglist small{color:var(--muted);font-weight:400;margin-left:6px}
 a.ghost{font:inherit;font-weight:700;border-radius:8px;padding:8px 14px;border:1px solid #c9d3e0;background:#fff;color:var(--ink);text-decoration:none}
 #logrows td{white-space:nowrap}
+button.danger{color:var(--bad);border-color:#f0b4b4}button.danger:hover{background:#fdeeee}

@@ -12,7 +12,18 @@ or collision-warning device.
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.4.0.
+The connected unit is running AirTrack 1.5.0.
+
+Changes in 1.5.0:
+
+- SD sighting log: choose how often a distinct aircraft may be logged again
+  (30 minutes, hourly, every 6 hours, or daily); a **Clear log** button
+  deletes every log file (`POST /api/v1/logs/clear`, CSRF-guarded).
+- **Factory reset** next to Restart: erases the SD sighting log and every
+  stored setting (Wi-Fi, location, options, and the setup-hotspot identity, so
+  a new password is generated), then restarts into setup mode. Requires the
+  CSRF token and typing `RESET` (`POST /api/v1/factory-reset`).
+- Settings schema 4 (adds the sighting window); older records migrate.
 
 Changes in 1.4.0:
 

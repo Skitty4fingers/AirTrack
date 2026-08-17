@@ -23,11 +23,11 @@
 #define LOG_DIR BOARD_SD_MOUNT_POINT "/airtrack/logs"
 #define LOG_GATE_TIMEOUT_MS 5000U
 #define LOG_READ_GATE_TIMEOUT_MS 2000U
-#define SIGHTING_WINDOW_MS (30U * 60U * 1000U)
+/* Enough distinct aircraft to hold a busy day's window without evictions. */
 /* Hold a sighting this long for a callsign whose route lookup is pending, so
  * the record can carry origin/destination when the enrichment lands. */
 #define ROUTE_GRACE_MS 20000U
-#define SEEN_ENTRIES 32U
+#define SEEN_ENTRIES 128U
 #define PRUNE_CHECK_BYTES (256U * 1024U)
 #define VALID_TIME_EPOCH 1704067200L
 
@@ -322,7 +322,8 @@ static esp_err_t append_record(const char *name, const airtrack_snapshot_t *snap
     return flushed && close_result == 0 ? ESP_OK : ESP_FAIL;
 }
 
-static seen_entry_t *seen_slot(seen_entry_t *seen, const char *hex, TickType_t now)
+static seen_entry_t *seen_slot(seen_entry_t *seen, const char *hex, TickType_t now,
+                               TickType_t window)
 {
     seen_entry_t *slot = NULL;
     for (size_t index = 0U; index < SEEN_ENTRIES; ++index) {
@@ -332,8 +333,7 @@ static seen_entry_t *seen_slot(seen_entry_t *seen, const char *hex, TickType_t n
         if (slot == NULL &&
             (seen[index].hex[0] == '\0' ||
              (!seen[index].pending &&
-              (TickType_t)(now - seen[index].logged_at) >=
-                  pdMS_TO_TICKS(SIGHTING_WINDOW_MS)))) {
+              (TickType_t)(now - seen[index].logged_at) >= window))) {
             slot = &seen[index];
         }
     }
@@ -355,11 +355,12 @@ static seen_entry_t *seen_slot(seen_entry_t *seen, const char *hex, TickType_t n
  */
 static bool should_log_sighting(seen_entry_t *seen,
                                 const airtrack_aircraft_t *aircraft,
-                                TickType_t now)
+                                TickType_t now, uint16_t window_min)
 {
-    seen_entry_t *entry = seen_slot(seen, aircraft->hex, now);
+    const TickType_t window = pdMS_TO_TICKS((uint32_t)window_min * 60000U);
+    seen_entry_t *entry = seen_slot(seen, aircraft->hex, now, window);
     if (!entry->pending) {
-        if ((TickType_t)(now - entry->logged_at) < pdMS_TO_TICKS(SIGHTING_WINDOW_MS)) {
+        if ((TickType_t)(now - entry->logged_at) < window) {
             return false;
         }
         entry->pending = true;
@@ -411,7 +412,8 @@ static void logger_task(void *argument)
         bool write_sighting[AIRTRACK_MAX_AIRCRAFT] = {false};
         bool any = false;
         for (size_t index = 0U; index < snapshot.aircraft_count; ++index) {
-            if (should_log_sighting(seen, &snapshot.aircraft[index], now)) {
+            if (should_log_sighting(seen, &snapshot.aircraft[index], now,
+                                    settings.sighting_window_min)) {
                 write_sighting[index] = true;
                 any = true;
             }
@@ -679,5 +681,58 @@ esp_err_t storage_logger_read(const char *name, size_t offset, void *buffer,
         fclose(file);
     }
     board_spi_release();
+    return result;
+}
+
+esp_err_t storage_logger_clear(uint32_t *deleted_files)
+{
+    if (deleted_files != NULL) {
+        *deleted_files = 0U;
+    }
+    if (!board_sd_is_mounted()) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (!board_spi_acquire(pdMS_TO_TICKS(LOG_GATE_TIMEOUT_MS))) {
+        return ESP_ERR_TIMEOUT;
+    }
+    uint32_t removed = 0U;
+    esp_err_t result = ESP_OK;
+    /* Several passes in case more files exist than one scan can hold. */
+    for (unsigned pass = 0U; pass < 8U; ++pass) {
+        storage_log_file_t files[STORAGE_LOG_MAX_LISTED];
+        size_t count = 0U;
+        uint64_t total = 0U;
+        if (scan_logs(files, STORAGE_LOG_MAX_LISTED, &count, &total) != ESP_OK) {
+            result = ESP_FAIL;
+            break;
+        }
+        if (count == 0U) {
+            break;
+        }
+        for (size_t index = 0U; index < count; ++index) {
+            char path[128];
+            (void)snprintf(path, sizeof(path), LOG_DIR "/%.31s", files[index].name);
+            if (unlink(path) == 0) {
+                ++removed;
+            } else {
+                result = ESP_FAIL;
+            }
+        }
+        if (result != ESP_OK) {
+            break;
+        }
+    }
+    board_spi_release();
+    if (s_logger.lock != NULL) {
+        xSemaphoreTake(s_logger.lock, portMAX_DELAY);
+        s_logger.status.log_bytes = 0U;
+        s_logger.status.log_files = 0U;
+        s_logger.status.records_written = 0U;
+        xSemaphoreGive(s_logger.lock);
+    }
+    if (deleted_files != NULL) {
+        *deleted_files = removed;
+    }
+    ESP_LOGI(TAG, "cleared %lu log file(s)", (unsigned long)removed);
     return result;
 }

@@ -192,6 +192,7 @@ static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
     updated.brightness_percent = requested->brightness_percent;
     updated.logging_mode = requested->logging_mode;
     updated.retention_mib = requested->retention_mib;
+    updated.sighting_window_min = requested->sighting_window_min;
     memcpy(updated.focus_flight, requested->focus_flight,
            sizeof(updated.focus_flight));
     updated.night_enabled = requested->night_enabled;
@@ -219,6 +220,34 @@ static esp_err_t save_dashboard_settings(airtrack_settings_t *requested,
     (void)storage_logger_update_settings(&updated);
     ESP_LOGI(TAG, "Dashboard settings applied (generation %llu)",
              (unsigned long long)updated.generation);
+    return ESP_OK;
+}
+
+/*
+ * Factory reset: wipe the sighting log, then every stored setting (including
+ * the setup-hotspot identity), then restart.  Runs in the HTTP task; the
+ * restart happens after the response has been sent.
+ */
+static esp_err_t factory_reset_from_dashboard(void *user_context)
+{
+    (void)user_context;
+    if (!claim_settings_restart()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint32_t deleted = 0U;
+    const esp_err_t logs = storage_logger_clear(&deleted);
+    if (logs != ESP_OK && logs != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "Factory reset: log clear returned %s", esp_err_to_name(logs));
+    }
+    esp_err_t err = airtrack_config_factory_reset();
+    if (err == ESP_OK) {
+        err = launch_settings_restart();
+    }
+    if (err != ESP_OK) {
+        release_settings_restart();
+        return err;
+    }
+    ESP_LOGW(TAG, "Factory reset requested from the dashboard; restarting");
     return ESP_OK;
 }
 
@@ -750,7 +779,7 @@ static setup_reason_t run_tracking_mode(void)
                 last_status_web_attempt = xTaskGetTickCount();
                 const esp_err_t web_result = status_web_start(
                     &web_snapshot, save_dashboard_settings,
-                    reboot_from_dashboard, NULL);
+                    reboot_from_dashboard, factory_reset_from_dashboard, NULL);
                 if (web_result != ESP_OK) {
                     ESP_LOGW(TAG, "Could not start LAN status server: %s",
                              esp_err_to_name(web_result));

@@ -14,4 +14,4 @@ if(_airtrack_idf_version VERSION_LESS "5.5.0"
         "AirTrack requires ESP-IDF >=5.5.0 and <5.6.0; found ${_airtrack_idf_version}")
 endif()
 
-project(airtrack VERSION 1.4.0)
+project(airtrack VERSION 1.5.0)

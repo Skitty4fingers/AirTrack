@@ -55,6 +55,9 @@ typedef struct {
     uint8_t night_brightness_percent; /* 0..50 */
     bool night_led_off;
     char timezone[AIRTRACK_TZ_MAX_LENGTH + 1U];
+    /* A distinct aircraft is written to the SD sighting log at most once per
+     * this many minutes (30 = default, 60 = hourly, 1440 = daily). */
+    uint16_t sighting_window_min;
 } airtrack_settings_t;
 
 typedef struct {
@@ -76,6 +79,13 @@ esp_err_t airtrack_config_save_wifi(const char *ssid, const char *password);
 
 /** Forget station credentials without changing the setup-network identity. */
 esp_err_t airtrack_config_clear_wifi(void);
+
+/**
+ * Erase every stored setting: Wi-Fi credentials, tracker/display settings,
+ * and the setup-hotspot identity (a new SSID suffix/password is generated on
+ * the next boot).  The caller restarts the device afterwards.
+ */
+esp_err_t airtrack_config_factory_reset(void);
 
 /** Fill tracker settings with conservative production defaults. */
 void airtrack_settings_defaults(airtrack_settings_t *out);

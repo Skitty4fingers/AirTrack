@@ -21,12 +21,14 @@
 #define AP_PREFIX "AirTrack-"
 #define SETTINGS_MAGIC 0x4b525441UL /* "ATRK" in little-endian storage. */
 /* Schema 1 records are 80 bytes; schema 2 (96) appends the focus flight;
- * schema 3 (136) appends the night schedule and timezone.  Older records
+ * schema 3 (136) appends the night schedule and timezone; schema 4 (138)
+ * appends the sighting-log window.  Older records
  * decode with defaults for the missing fields; unknown schemas are rejected. */
-#define SETTINGS_SCHEMA 3U
-#define SETTINGS_WIRE_BYTES 136U
+#define SETTINGS_SCHEMA 4U
+#define SETTINGS_WIRE_BYTES 138U
 #define SETTINGS_V1_WIRE_BYTES 80U
 #define SETTINGS_V2_WIRE_BYTES 96U
+#define SETTINGS_V3_WIRE_BYTES 136U
 
 enum {
     WIRE_MAGIC = 0,
@@ -58,6 +60,7 @@ enum {
     WIRE_NIGHT_LED_OFF = 86,
     WIRE_TZ_LENGTH = 87,
     WIRE_TZ = 88,             /* up to 47 bytes */
+    WIRE_SIGHTING_WINDOW = 136, /* schema 4 */
 };
 
 static const char AP_PASSWORD_ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -128,6 +131,7 @@ void airtrack_settings_defaults(airtrack_settings_t *out)
         .night_end_min = 7U * 60U,
         .night_brightness_percent = 5U,
         .night_led_off = true,
+        .sighting_window_min = 30U,
     };
     memcpy(out->hostname, "airtrack", sizeof("airtrack"));
 }
@@ -217,7 +221,9 @@ esp_err_t airtrack_settings_validate(const airtrack_settings_t *settings)
         !focus_flight_valid(settings->focus_flight) ||
         settings->night_start_min >= 1440U || settings->night_end_min >= 1440U ||
         settings->night_brightness_percent > 50U ||
-        !timezone_valid(settings->timezone)) {
+        !timezone_valid(settings->timezone) ||
+        settings->sighting_window_min < 5U ||
+        settings->sighting_window_min > 1440U) {
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
@@ -258,6 +264,7 @@ static void encode_settings(const airtrack_settings_t *settings,
     const size_t tz_length = strlen(settings->timezone);
     wire[WIRE_TZ_LENGTH] = (uint8_t)tz_length;
     memcpy(wire + WIRE_TZ, settings->timezone, tz_length);
+    put_u16(wire + WIRE_SIGHTING_WINDOW, settings->sighting_window_min);
     put_u32(wire + WIRE_CRC, 0U);
     put_u32(wire + WIRE_CRC,
             esp_crc32_le(UINT32_MAX, wire, SETTINGS_WIRE_BYTES));
@@ -274,7 +281,8 @@ static bool decode_settings(const uint8_t *wire, size_t length,
     const uint16_t schema = get_u16(wire + WIRE_SCHEMA);
     if (!((schema == 1U && length == SETTINGS_V1_WIRE_BYTES) ||
           (schema == 2U && length == SETTINGS_V2_WIRE_BYTES) ||
-          (schema == 3U && length == SETTINGS_WIRE_BYTES)) ||
+          (schema == 3U && length == SETTINGS_V3_WIRE_BYTES) ||
+          (schema == 4U && length == SETTINGS_WIRE_BYTES)) ||
         get_u16(wire + WIRE_LENGTH) != length) {
         return false;
     }
@@ -335,6 +343,8 @@ static bool decode_settings(const uint8_t *wire, size_t length,
         decoded.night_brightness_percent = 5U;
         decoded.night_led_off = true;
     }
+    decoded.sighting_window_min =
+        schema >= 4U ? get_u16(wire + WIRE_SIGHTING_WINDOW) : 30U;
     if ((wire[WIRE_LOCATION_CONFIGURED] > 1U) ||
         (wire[WIRE_INCLUDE_GROUND] > 1U) ||
         airtrack_settings_validate(&decoded) != ESP_OK) {
@@ -720,4 +730,23 @@ bool airtrack_settings_is_night(const airtrack_settings_t *settings,
         return minutes_of_day >= start && minutes_of_day < end;
     }
     return minutes_of_day >= start || minutes_of_day < end; /* wraps midnight */
+}
+
+esp_err_t airtrack_config_factory_reset(void)
+{
+    esp_err_t err = airtrack_config_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+    nvs_handle_t handle;
+    err = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_erase_all(handle);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
 }
