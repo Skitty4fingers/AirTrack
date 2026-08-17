@@ -1,0 +1,41 @@
+# Hardware and image layout
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The board exposes the ESP32-C6 native USB Serial/JTAG interface.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# The supervisor copies a complete fixed aircraft snapshot while starting the
+# LAN HTTP server.  The ESP-IDF default main-task stack is too small for that
+# bounded call chain on ESP32-C6; retain measured production margin.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Favor flash headroom for the dual-slot OTA layout.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# The LVGL port owns notification index 0; the shared-SPI flush completion
+# path uses index 1 so the two event streams cannot consume each other.
+CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES=2
+CONFIG_FREERTOS_SUPPORT_STATIC_ALLOCATION=y
+
+# Keep LVGL's upstream examples and demos out of this firmware build.
+# CONFIG_LV_BUILD_EXAMPLES is not set
+# CONFIG_LV_BUILD_DEMOS is not set
+
+# Keep the stacks that AirTrack does not use out of the image and heap.
+# CONFIG_BT_ENABLED is not set
+# CONFIG_IEEE802154_ENABLED is not set
+
+# adsb.fi must use verified HTTPS. Keep a full-size inbound TLS record while
+# allocating TLS buffers only when they are needed.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# Setup clients must send DNS queries to AirTrack so wildcard captive DNS can
+# direct platform connectivity probes to the local portal.
+CONFIG_LWIP_DHCPS_ADD_DNS=y
