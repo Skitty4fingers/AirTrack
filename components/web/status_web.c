@@ -154,7 +154,7 @@ static const char PAGE_FACTS_END[] =
     "</ul></div></div>";
 
 static const char PAGE_TABLE_HEAD[] =
-    "<div class=tbl><table><thead><tr><th>Aircraft</th><th>Type</th><th>Distance</th>"
+    "<div class=tbl><table><thead><tr><th>Aircraft</th><th>Type</th><th>Route</th><th>Distance</th>"
     "<th>Bearing</th><th>Altitude</th><th>Speed</th><th>Squawk</th></tr></thead>"
     "<tbody id=rows>";
 

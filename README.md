@@ -17,8 +17,9 @@ Rendered from the current firmware: the LCD frames come from
 2x), the dashboard captures are headless-Chromium screenshots of the live
 device. Design references are in [`docs/ui/`](docs/ui/).
 
-**Device** — live target with route, single-flight focus, no reports, Wi-Fi
-lost, setup, and recovery setup:
+**Device** — single-flight focus with route and ETA, no recent reports, Wi-Fi
+lost, and setup (network names, addresses, and coordinates in all images are
+sample values):
 
 ![AirTrack LCD states](docs/ui/lcd-states.png)
 

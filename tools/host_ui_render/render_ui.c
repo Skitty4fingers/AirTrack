@@ -95,7 +95,7 @@ int main(int argc, char **argv)
     ui_diagnostic_state_t diag = {
         .phase = "Connecting to Wi-Fi", .lcd = UI_DIAGNOSTIC_OK,
         .sd = UI_DIAGNOSTIC_OK, .flash = UI_DIAGNOSTIC_OK,
-        .flash_bytes = 8U * 1024U * 1024U, .ssid = "CooperNet",
+        .flash_bytes = 8U * 1024U * 1024U, .ssid = "HomeNet",
     };
     ui_diagnostic_update(&diag);
     snprintf(path, sizeof(path), "%s/01_boot.ppm", out_dir);
@@ -122,8 +122,8 @@ int main(int argc, char **argv)
     a->distance_nm = 8.6f; a->bearing_deg = 245.0f; a->seen_pos_s = 0.3f;
 
     ui_tracking_state_t state = {
-        .settings = &settings, .snapshot = &snap, .ssid = "CooperNet",
-        .ip_address = "10.0.0.104", .rssi_available = true, .rssi_dbm = -48,
+        .settings = &settings, .snapshot = &snap, .ssid = "HomeNet",
+        .ip_address = "192.168.1.42", .rssi_available = true, .rssi_dbm = -48,
         .wifi_connected = true,
     };
     ui_diagnostic_show_tracking(&state);
@@ -197,10 +197,10 @@ int main(int argc, char **argv)
     render_and_save(path);
 
     /* Setup screen (recovery variant). */
-    ui_diagnostic_show_setup("AirTrack-8134", "ABCD2345", "192.168.4.1", true);
+    ui_diagnostic_show_setup("AirTrack-A31F", "FLY48271", "192.168.4.1", true);
     snprintf(path, sizeof(path), "%s/07_setup_recovery.ppm", out_dir);
     render_and_save(path);
-    ui_diagnostic_show_setup("AirTrack-8134", "ABCD2345", "192.168.4.1", false);
+    ui_diagnostic_show_setup("AirTrack-A31F", "FLY48271", "192.168.4.1", false);
     snprintf(path, sizeof(path), "%s/08_setup.ppm", out_dir);
     render_and_save(path);
     return 0;
