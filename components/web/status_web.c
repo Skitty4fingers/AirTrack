@@ -2639,7 +2639,7 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
     server_config.stack_size = 10240U;
     server_config.max_open_sockets = 3U;
-    server_config.max_uri_handlers = 14U;
+    server_config.max_uri_handlers = 24U;
     server_config.uri_match_fn = httpd_uri_match_wildcard;
     server_config.lru_purge_enable = true;
     server_config.recv_wait_timeout = 5U;
