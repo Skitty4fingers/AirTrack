@@ -1,8 +1,8 @@
 {
-  "version": "1.6.2",
-  "size": 1797664,
-  "sha256": "5c113fcda5d3e77c5129e2966da51d0b8ecd1e9e02aef69ed038d998d81884b2",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.2/airtrack-1.6.2.bin",
-  "notes": "Dashboard: tidier Firmware / Update rows in the System card with a proper control row and progress bar.",
+  "version": "1.6.3",
+  "size": 1801840,
+  "sha256": "52db9d532b45213e8e5194ca83117b015b7bed8d6363830290479f82015bb05c",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.3/airtrack-1.6.3.bin",
+  "notes": "Updates get their own dashboard card: installed vs latest version, release date, release notes and a progress bar.\nSystem card keeps just the firmware row.\nStatus API adds released and checked_age_s; manifest notes may span several lines.",
   "released": "2026-08-17"
 }
