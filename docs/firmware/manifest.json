@@ -1,8 +1,8 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "size": 1797536,
-  "sha256": "58e55ee86f1f0934418d3e8cddbbe9857e4a44dfc2343265eb4328523205ded6",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.0/airtrack-1.6.0.bin",
-  "notes": "Dashboard-initiated OTA updates with rollback; setup portal restyle; optional setup location (SEA placeholder); night schedule; sighting log window and clear; factory reset.",
+  "sha256": "530af52a0d85b9b73d24aafe0a2f6057cdc6c4ca68770d257b92fb50c0ba02aa",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.1/airtrack-1.6.1.bin",
+  "notes": "First over-the-air release: verifies the dashboard update path from 1.6.0.",
   "released": "2026-08-17"
 }
