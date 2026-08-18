@@ -139,6 +139,7 @@ static bool allowed_https_url(const char *url)
     static const char *hosts[] = {
         "https://github.com/", "https://skitty4fingers.github.io/",
         "https://objects.githubusercontent.com/", "https://raw.githubusercontent.com/",
+        "https://release-assets.githubusercontent.com/",
     };
     for (size_t index = 0U; index < sizeof(hosts) / sizeof(hosts[0]); ++index) {
         if (strncmp(url, hosts[index], strlen(hosts[index])) == 0) {
@@ -266,13 +267,33 @@ static void run_install(void)
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
     char error[OTA_ERROR_MAX_BYTES + 1U] = "";
-    esp_err_t result = client != NULL ? esp_http_client_open(client, 0) : ESP_ERR_NO_MEM;
+    esp_err_t result = client != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+    int64_t content_length = 0;
+    int http_status = 0;
+    /* GitHub release assets redirect once to a storage host; the streaming
+     * API does not follow redirects itself, so do it here (bounded). */
+    for (unsigned hop = 0U; result == ESP_OK && hop < 4U; ++hop) {
+        result = esp_http_client_open(client, 0);
+        if (result != ESP_OK) {
+            (void)snprintf(error, sizeof(error), "connect: %s", esp_err_to_name(result));
+            break;
+        }
+        content_length = esp_http_client_fetch_headers(client);
+        http_status = esp_http_client_get_status_code(client);
+        if (http_status == 301 || http_status == 302 || http_status == 303 ||
+            http_status == 307 || http_status == 308) {
+            result = esp_http_client_set_redirection(client);
+            (void)esp_http_client_close(client);
+            if (result != ESP_OK) {
+                (void)snprintf(error, sizeof(error), "redirect without location");
+            }
+            continue;
+        }
+        break;
+    }
     if (result != ESP_OK) {
-        (void)snprintf(error, sizeof(error), "connect: %s", esp_err_to_name(result));
         goto done;
     }
-    const int64_t content_length = esp_http_client_fetch_headers(client);
-    const int http_status = esp_http_client_get_status_code(client);
     if (http_status != 200) {
         (void)snprintf(error, sizeof(error), "download: HTTP %d", http_status);
         result = ESP_FAIL;
