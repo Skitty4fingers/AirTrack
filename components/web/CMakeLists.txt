@@ -9,6 +9,7 @@ idf_component_register(
     REQUIRES
         config
         esp_http_server
+        ota
         storage
         tracker
     PRIV_REQUIRES

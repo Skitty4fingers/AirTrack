@@ -203,5 +203,8 @@ int main(int argc, char **argv)
     ui_diagnostic_show_setup("AirTrack-A31F", "FLY48271", "192.168.4.1", false);
     snprintf(path, sizeof(path), "%s/08_setup.ppm", out_dir);
     render_and_save(path);
+    ui_diagnostic_show_updating("1.6.1", 62, "Downloading", false);
+    snprintf(path, sizeof(path), "%s/09_updating.ppm", out_dir);
+    render_and_save(path);
     return 0;
 }

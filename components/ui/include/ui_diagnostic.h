@@ -67,6 +67,14 @@ typedef struct {
 /** Show or update the production nearest-aircraft screen. */
 esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state);
 
+/**
+ * Show or refresh the firmware-update screen: version being installed, a
+ * progress bar (0-100), and a short phase text ("Downloading", "Verifying",
+ * "Restarting", or an error).  Replaces whatever screen is visible.
+ */
+esp_err_t ui_diagnostic_show_updating(const char *version, uint8_t percent,
+                                      const char *phase, bool failed);
+
 esp_err_t ui_diagnostic_deinit(void);
 bool ui_diagnostic_is_initialized(void);
 

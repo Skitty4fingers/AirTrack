@@ -53,3 +53,8 @@ CONFIG_LV_FONT_MONTSERRAT_40=y
 # Sighting logs are named YYYY-MM-DD.ndjson, which needs FAT long filenames.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
+
+# Firmware updates from the dashboard: a freshly installed image must mark
+# itself valid after a self-test, otherwise the bootloader returns to the
+# previous slot.  Bootloader option: reflash the bootloader once over USB.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

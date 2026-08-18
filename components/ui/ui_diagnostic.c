@@ -90,6 +90,12 @@ typedef struct {
     lv_obj_t *trk_empty_hint;
     lv_obj_t *trk_footer_net;
     lv_obj_t *trk_footer_data;
+    /* Update screen widgets. */
+    bool updating_visible;
+    lv_obj_t *upd_version;
+    lv_obj_t *upd_fill;
+    lv_obj_t *upd_percent;
+    lv_obj_t *upd_phase;
     bool radar_animating;
     lv_point_precise_t arrow_points[5];
     lv_draw_buf_t *qr_draw_buffer;
@@ -829,6 +835,7 @@ esp_err_t ui_diagnostic_show_setup(const char *ap_ssid,
         s_ui.radar_animating = false;
     }
     s_ui.tracking_visible = false;
+    s_ui.updating_visible = false;
     if (old_screen != NULL) {
         lv_obj_delete(old_screen);
     }
@@ -1223,6 +1230,7 @@ static void create_tracking_screen_locked(void)
     s_ui.ip = NULL;
     s_ui.radar_animating = false;
     s_ui.diagnostic_visible = false;
+    s_ui.updating_visible = false;
     s_ui.tracking_visible = true;
 }
 
@@ -1571,6 +1579,88 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
     lv_obj_set_style_text_color(s_ui.trk_footer_net,
         lv_color_hex(state->wifi_connected ? UI_COLOR_DIM : UI_COLOR_RED), 0);
 
+    lvgl_port_unlock();
+    (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+    return ESP_OK;
+}
+
+esp_err_t ui_diagnostic_show_updating(const char *version, uint8_t percent,
+                                      const char *phase, bool failed)
+{
+    if (!s_ui.initialized || version == NULL || phase == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (percent > 100U) {
+        percent = 100U;
+    }
+    if (!lvgl_port_lock(1000)) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (!s_ui.updating_visible) {
+        lv_obj_t *screen = lv_obj_create(NULL);
+        lv_obj_remove_style_all(screen);
+        lv_obj_set_style_bg_color(screen, lv_color_hex(UI_COLOR_BG), 0);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+        create_header(screen, UI_COLOR_AMBER, NULL);
+        create_centered_label(screen, "UPDATING", 70, &lv_font_montserrat_20,
+                              UI_COLOR_AMBER);
+        s_ui.upd_version = create_centered_label(screen, "", 100,
+                                                 &lv_font_montserrat_16,
+                                                 UI_COLOR_TEXT);
+        lv_obj_t *track = create_panel(screen, 16, 140, BOARD_LCD_H_RES - 32, 12,
+                                       0x1C2A3D);
+        lv_obj_set_style_radius(track, 6, 0);
+        s_ui.upd_fill = create_panel(track, 0, 0, 1, 12, UI_COLOR_AMBER);
+        lv_obj_set_style_radius(s_ui.upd_fill, 6, 0);
+        s_ui.upd_percent = create_centered_label(screen, "0%", 160,
+                                                 &lv_font_montserrat_28,
+                                                 UI_COLOR_TEXT);
+        s_ui.upd_phase = create_centered_label(screen, "", 204,
+                                               &lv_font_montserrat_12,
+                                               UI_COLOR_DIM);
+        create_centered_label(screen, "Keep power connected", 250,
+                              &lv_font_montserrat_12, UI_COLOR_MUTED);
+        create_hline(screen, 14, 296, BOARD_LCD_H_RES - 28, 0x1C2A3D);
+        create_centered_label(screen, "Data: adsb.fi", 304,
+                              &lv_font_montserrat_10, UI_COLOR_MUTED);
+
+        lv_obj_t *old_screen = s_ui.screen;
+        lv_draw_buf_t *old_qr = s_ui.qr_draw_buffer;
+        if (s_ui.tracking_visible && s_ui.radar_animating) {
+            lv_anim_delete(s_ui.trk_radar_sweep, radar_sweep_animate);
+            s_ui.radar_animating = false;
+        }
+        lv_screen_load(screen);
+        s_ui.screen = screen;
+        s_ui.qr_draw_buffer = NULL;
+        if (old_screen != NULL) {
+            lv_obj_delete(old_screen);
+        }
+        if (old_qr != NULL) {
+            lv_draw_buf_destroy(old_qr);
+        }
+        s_ui.phase = NULL;
+        s_ui.lcd_value = NULL;
+        s_ui.sd_value = NULL;
+        s_ui.flash_value = NULL;
+        s_ui.ssid = NULL;
+        s_ui.ip = NULL;
+        s_ui.diagnostic_visible = false;
+        s_ui.tracking_visible = false;
+        s_ui.updating_visible = true;
+    }
+    char text[48];
+    (void)snprintf(text, sizeof(text), "AirTrack %s", version);
+    set_label_if_changed(s_ui.upd_version, text);
+    const int32_t width = ((int32_t)BOARD_LCD_H_RES - 32) * percent / 100;
+    lv_obj_set_width(s_ui.upd_fill, width > 0 ? width : 1);
+    lv_obj_set_style_bg_color(s_ui.upd_fill,
+                              lv_color_hex(failed ? UI_COLOR_RED : UI_COLOR_AMBER), 0);
+    (void)snprintf(text, sizeof(text), "%u%%", (unsigned)percent);
+    set_label_if_changed(s_ui.upd_percent, text);
+    set_label_if_changed(s_ui.upd_phase, phase);
+    lv_obj_set_style_text_color(s_ui.upd_phase,
+                                lv_color_hex(failed ? UI_COLOR_RED : UI_COLOR_DIM), 0);
     lvgl_port_unlock();
     (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
     return ESP_OK;

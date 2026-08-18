@@ -11,6 +11,7 @@
 #include <strings.h>
 
 #include "esp_app_desc.h"
+#include "ota_update.h"
 #include "storage_logger.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -1211,14 +1212,31 @@ static esp_err_t send_system_card(httpd_req_t *request,
         memcpy(sd, "Card mounted &middot; logging off",
                sizeof("Card mounted &middot; logging off"));
     }
+    ota_status_t ota;
+    (void)ota_get_status(&ota);
     esp_err_t result = send_html_chunk(request,
         "<section class=card id=system><div class=sys><div><h2>System</h2>"
-        "<div class=kv><span>Firmware</span><b>");
+        "<div class=kv><span>Firmware</span><b><span id=fw>");
     if (result == ESP_OK) {
         result = send_html_escaped(request, version);
     }
     if (result == ESP_OK) {
-        result = send_html_chunk(request, "</b><span>Address</span><b>");
+        char partition[640];
+        const int length = snprintf(partition, sizeof(partition),
+            "</span> <small style=\"color:var(--muted);font-weight:500\">slot %s%s</small> "
+            "<button type=button id=otacheck class=ghost style=\"padding:6px 12px;margin-left:8px\">"
+            "Check for updates</button></b>"
+            "<span>Update</span><b><span id=otamsg>%s</span> "
+            "<button type=button id=otainstall style=\"padding:6px 12px;margin-left:8px\" hidden>Install</button>"
+            "<div id=otabar hidden style=\"height:8px;background:#e3e8ef;border-radius:4px;margin-top:8px;overflow:hidden\">"
+            "<div id=otafill style=\"height:100%%;width:0;background:var(--blue)\"></div></div></b>",
+            ota.running_partition, ota.pending_verify ? " (verifying)" : "",
+            ota.state == OTA_STATE_AVAILABLE ? "Update available"
+            : ota.state == OTA_STATE_UP_TO_DATE ? "Up to date" : "Not checked yet");
+        result = send_chunk_or_size(request, partition, length, sizeof(partition));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "<span>Address</span><b>");
     }
     if (result == ESP_OK) {
         result = send_html_escaped(request, snapshot->ip_address);
@@ -1632,6 +1650,7 @@ typedef struct {
     bool have_retention;
     bool have_log_window;
     bool have_confirm;
+    bool have_version;
     bool have_night_from;
     bool have_night_to;
     bool have_night_brightness;
@@ -1650,6 +1669,7 @@ typedef struct {
     char retention[8];
     char log_window[8];
     char confirm[8];
+    char version[OTA_VERSION_MAX_BYTES + 1U];
     char night_from[8];
     char night_to[8];
     char night_brightness[8];
@@ -1704,6 +1724,7 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("retention", form->retention, have_retention)
         FIELD("log_window", form->log_window, have_log_window)
         FIELD("confirm", form->confirm, have_confirm)
+        FIELD("version", form->version, have_version)
         FIELD("night_from", form->night_from, have_night_from)
         FIELD("night_to", form->night_to, have_night_to)
         FIELD("night_brightness", form->night_brightness, have_night_brightness)
@@ -2333,6 +2354,144 @@ static esp_err_t factory_reset_handler(httpd_req_t *request)
     return send_form_result(request, true, "200 OK", "");
 }
 
+static const char *ota_state_name(ota_state_t state)
+{
+    switch (state) {
+    case OTA_STATE_CHECKING: return "checking";
+    case OTA_STATE_UP_TO_DATE: return "up_to_date";
+    case OTA_STATE_AVAILABLE: return "available";
+    case OTA_STATE_DOWNLOADING: return "downloading";
+    case OTA_STATE_VERIFYING: return "verifying";
+    case OTA_STATE_READY: return "ready";
+    case OTA_STATE_FAILED: return "failed";
+    default: return "idle";
+    }
+}
+
+static esp_err_t send_ota_status_json(httpd_req_t *request)
+{
+    ota_status_t ota;
+    (void)ota_get_status(&ota);
+    esp_err_t result = httpd_resp_set_type(request, "application/json; charset=utf-8");
+    if (result == ESP_OK) {
+        result = set_security_headers(request);
+    }
+    if (result == ESP_OK) {
+        char head[160];
+        const int length = snprintf(head, sizeof(head),
+            "{\"state\":\"%s\",\"busy\":%s,\"percent\":%u,\"downloaded\":%lu,"
+            "\"size\":%lu,\"pending_verify\":%s,\"partition\":\"%s\",\"current\":\"",
+            ota_state_name(ota.state), ota_busy() ? "true" : "false",
+            (unsigned)ota.percent, (unsigned long)ota.downloaded,
+            (unsigned long)ota.size, ota.pending_verify ? "true" : "false",
+            ota.running_partition);
+        result = send_chunk_or_size(request, head, length, sizeof(head));
+    }
+    if (result == ESP_OK) {
+        result = send_json_escaped(request, ota.current_version);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "\",\"available\":\"");
+    }
+    if (result == ESP_OK) {
+        result = send_json_escaped(request, ota.available_version);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "\",\"notes\":\"");
+    }
+    if (result == ESP_OK) {
+        result = send_json_escaped(request, ota.notes);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "\",\"error\":\"");
+    }
+    if (result == ESP_OK) {
+        result = send_json_escaped(request, ota.error);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "\"}");
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+static esp_err_t ota_status_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/api/v1/ota/status");
+    }
+    return send_ota_status_json(request);
+}
+
+static esp_err_t ota_check_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    settings_form_t form;
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, &form);
+    }
+    memset(body, 0, sizeof(body));
+    if (result != ESP_OK || !form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    result = ota_check_async();
+    if (result == ESP_ERR_INVALID_STATE) {
+        return send_form_result(request, false, "409 Conflict",
+                                "An update task is already running.");
+    }
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "503 Service Unavailable",
+                                "Could not start the update check.");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
+static esp_err_t ota_start_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    settings_form_t form;
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, &form);
+    }
+    memset(body, 0, sizeof(body));
+    if (result != ESP_OK || !form.csrf_ok) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    if (!form.have_version) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Missing version.");
+    }
+    result = ota_start(form.version);
+    if (result == ESP_ERR_INVALID_STATE) {
+        return send_form_result(request, false, "409 Conflict",
+                                "Check for updates first; the offered version must match.");
+    }
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "503 Service Unavailable",
+                                "Could not start the update.");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
 static esp_err_t favicon_handler(httpd_req_t *request)
 {
     const status_web_snapshot_storage_t snapshot = copy_snapshot();
@@ -2390,6 +2549,24 @@ static const httpd_uri_t URI_FACTORY_RESET = {
     .uri = "/api/v1/factory-reset",
     .method = HTTP_POST,
     .handler = factory_reset_handler,
+};
+
+static const httpd_uri_t URI_OTA_STATUS = {
+    .uri = "/api/v1/ota/status",
+    .method = HTTP_GET,
+    .handler = ota_status_handler,
+};
+
+static const httpd_uri_t URI_OTA_CHECK = {
+    .uri = "/api/v1/ota/check",
+    .method = HTTP_POST,
+    .handler = ota_check_handler,
+};
+
+static const httpd_uri_t URI_OTA_START = {
+    .uri = "/api/v1/ota/start",
+    .method = HTTP_POST,
+    .handler = ota_start_handler,
 };
 
 static const httpd_uri_t URI_LOGS_CLEAR = {
@@ -2490,6 +2667,9 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_REBOOT,
         &URI_LOGS,
         &URI_LOGS_CLEAR,
+        &URI_OTA_STATUS,
+        &URI_OTA_CHECK,
+        &URI_OTA_START,
         &URI_FACTORY_RESET,
         &URI_LOG_FILE,
         &URI_FAVICON,

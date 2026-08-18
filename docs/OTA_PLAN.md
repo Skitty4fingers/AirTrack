@@ -1,4 +1,7 @@
-# AirTrack over-the-air update plan (simple)
+# AirTrack over-the-air updates
+
+Status: implemented in 1.6.0 (`components/ota`, System-card UI,
+`tools/publish_release.sh`). This page is the design reference.
 
 Update a deployed AirTrack from its LAN dashboard, with firmware packages
 kept on GitHub. No signing, no channels, no automation beyond one script.

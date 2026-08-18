@@ -83,14 +83,25 @@ the physical device, its real fixed location, or elapsed soak time.
 
 ## Deliberately deferred from 1.0.0
 
-- Signed browser/remote OTA and automatic rollback. Dual slots are reserved,
-  but 1.5.0 updates use native USB.
+- Signed OTA images (deliberately left out; HTTPS + manifest SHA-256 instead).
+  Dual slots are used by the dashboard updater since 1.6.0; 1.5.0 updates use native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.
 - Arbitrary hot reinsertion of an SD card after boot.
 - Flash/NVS encryption. Wi-Fi credentials are never served or logged, but are
   stored unencrypted at rest on this prototype hardware.
+
+## Publish an over-the-air release
+
+```sh
+GITHUB_TOKEN=... tools/publish_release.sh <version> "release notes"
+```
+
+The script refuses a dirty tree or a version that does not match
+`CMakeLists.txt`, runs the gate below, uploads the artifact to the GitHub
+Release, and pushes `docs/firmware/manifest.json` (that push is what makes
+devices see the update).
 
 ## Reproduce the artifact gate
 

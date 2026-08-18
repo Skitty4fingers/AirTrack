@@ -146,6 +146,62 @@
       if (!rows.firstChild) { var tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 9; td.textContent = 'Empty file.'; tr.appendChild(td); rows.appendChild(tr); }
     }).catch(function () { t('logname', name + ' — could not load'); });
   }
+  /* Firmware updates: check → install → progress → reconnect. */
+  function csrfForm(action) {
+    var f = document.createElement('form'); f.action = action;
+    var tok = document.querySelector('#cfg [name=csrf_token]');
+    var i = document.createElement('input'); i.name = 'csrf_token'; i.value = tok ? tok.value : ''; f.appendChild(i);
+    return f;
+  }
+  var otaTimer = null, otaVersion = '';
+  function otaRender(o) {
+    var msg = $('otamsg'), inst = $('otainstall'), bar = $('otabar'), fill = $('otafill');
+    if (!msg) return;
+    otaVersion = o.available || '';
+    var text = { idle: 'Not checked yet', checking: 'Checking…',
+      up_to_date: 'Up to date' + (o.available ? ' (latest ' + o.available + ')' : ''),
+      available: 'Version ' + o.available + ' available' + (o.notes ? ' — ' + o.notes : ''),
+      downloading: 'Downloading ' + o.available + ' … ' + o.percent + '%',
+      verifying: 'Verifying image…', ready: 'Installed — restarting…',
+      failed: 'Update failed: ' + o.error }[o.state] || o.state;
+    msg.textContent = text;
+    if (inst) { inst.hidden = o.state !== 'available'; inst.textContent = 'Install ' + o.available; }
+    if (bar) { bar.hidden = !(o.state === 'downloading' || o.state === 'verifying' || o.state === 'ready'); }
+    if (fill) fill.style.width = (o.state === 'ready' || o.state === 'verifying' ? 100 : o.percent) + '%';
+    var still = o.state === 'checking' || o.state === 'downloading' || o.state === 'verifying' || o.busy;
+    if (o.state === 'ready') { waitForReboot(o.available); return; }
+    if (still && !otaTimer) otaTimer = setInterval(otaPoll, 1000);
+    if (!still && otaTimer) { clearInterval(otaTimer); otaTimer = null; }
+  }
+  function otaPoll() { fetch('/api/v1/ota/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(otaRender).catch(function () {}); }
+  function waitForReboot(version) {
+    if (otaTimer) { clearInterval(otaTimer); otaTimer = null; }
+    var msg = $('otamsg'); if (msg) msg.textContent = 'Restarting into ' + version + ' — reconnecting…';
+    var tries = 0;
+    var t = setInterval(function () {
+      tries++;
+      fetch('/api/v1/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+        if (j.firmware === version) { clearInterval(t); location.reload(); }
+      }).catch(function () {});
+      if (tries > 120) { clearInterval(t); if (msg) msg.textContent = 'Device did not come back on this address; check the LCD.'; }
+    }, 2000);
+  }
+  var oc = $('otacheck');
+  if (oc) oc.onclick = function () {
+    post(csrfForm('/api/v1/ota/check'), function (r) {
+      if (!r.ok) { toast('Check failed: ' + (r.j.error || ''), 'bad'); return; }
+      otaRender({ state: 'checking', busy: true, percent: 0 });
+    });
+  };
+  var oi = $('otainstall');
+  if (oi) oi.onclick = function () {
+    if (!otaVersion || !confirm('Install AirTrack ' + otaVersion + '? The display pauses tracking during the download and restarts when done.')) return;
+    var f = csrfForm('/api/v1/ota/start');
+    var v = document.createElement('input'); v.name = 'version'; v.value = otaVersion; f.appendChild(v);
+    post(f, function (r) { if (!r.ok) { toast('Not started: ' + (r.j.error || ''), 'bad'); return; } otaRender({ state: 'downloading', busy: true, percent: 0, available: otaVersion }); });
+  };
+  otaPoll();
+
   var lr = $('logrefresh'); if (lr) lr.onclick = loadLogs;
   var lc = $('logclear');
   if (lc) lc.onclick = function () {

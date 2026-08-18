@@ -3,6 +3,7 @@
 #include "board.h"
 #include "captive_dns.h"
 #include "connectivity.h"
+#include "ota_update.h"
 #include "setup_web.h"
 #include "status_web.h"
 #include "storage_logger.h"
@@ -35,6 +36,9 @@
 #define RECOVERY_RECONNECT_DELAY_MS 20000U
 #define RECOVERY_STABLE_MS 5000U
 #define VALID_TIME_EPOCH 1704067200L
+#define OTA_MANIFEST_URL "https://skitty4fingers.github.io/AirTrack/firmware/manifest.json"
+#define OTA_SELFTEST_DEADLINE_MS (3U * 60U * 1000U)
+#define OTA_SELFTEST_MIN_HEAP (60U * 1024U)
 
 static const char *TAG = "airtrack";
 static portMUX_TYPE s_restart_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -612,6 +616,9 @@ static void run_setup_mode(setup_reason_t reason)
     boot_hold_t boot_hold = {0};
     bool station_seen_connected = false;
     TickType_t connected_since = 0U;
+    /* A new image that reached setup mode has working flash, LCD, and Wi-Fi
+     * driver; there is no LAN to test further, so accept it. */
+    (void)ota_confirm_running_image();
     for (;;) {
         connectivity_status_t status;
         ESP_ERROR_CHECK(connectivity_get_status(&status));
@@ -638,6 +645,50 @@ static void run_setup_mode(setup_reason_t reason)
             esp_restart();
         }
         vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_INTERVAL_MS));
+    }
+}
+
+/* Called in the OTA task right before the download: free the TLS heap. */
+static void ota_prepare(void *user_context)
+{
+    (void)user_context;
+    (void)adsb_client_set_online(false);
+    (void)storage_logger_stop();
+    ESP_LOGI(TAG, "Firmware update starting; polling paused");
+}
+
+/*
+ * Rollback self-test for a freshly installed image: the station has an
+ * address, the dashboard answers, and heap is healthy.  Passing marks the
+ * image valid; failing to pass within OTA_SELFTEST_DEADLINE_MS rolls back.
+ */
+static void ota_selftest(bool connected, bool web_running)
+{
+    if (!ota_pending_verify()) {
+        return;
+    }
+    const bool healthy = connected && web_running &&
+        heap_caps_get_free_size(MALLOC_CAP_8BIT) >= OTA_SELFTEST_MIN_HEAP;
+    if (healthy) {
+        (void)ota_confirm_running_image();
+    } else if (esp_timer_get_time() / 1000LL > (int64_t)OTA_SELFTEST_DEADLINE_MS) {
+        (void)ota_reject_running_image_and_reboot();
+    }
+}
+
+static const char *ota_phase_text(const ota_status_t *ota)
+{
+    switch (ota->state) {
+    case OTA_STATE_DOWNLOADING:
+        return "Downloading";
+    case OTA_STATE_VERIFYING:
+        return "Verifying image";
+    case OTA_STATE_READY:
+        return "Restarting";
+    case OTA_STATE_FAILED:
+        return ota->error;
+    default:
+        return "";
     }
 }
 
@@ -668,6 +719,8 @@ static setup_reason_t run_tracking_mode(void)
     led_state_t led = LED_UNSET;
     int applied_brightness = -1;
     bool last_night = false;
+    bool ota_screen_shown = false;
+    TickType_t ota_failed_since = 0U;
 
     for (;;) {
         connectivity_status_t status;
@@ -680,6 +733,36 @@ static setup_reason_t run_tracking_mode(void)
                      local_minutes_of_day() / 60, local_minutes_of_day() % 60);
         }
         apply_brightness(&settings, night, &applied_brightness);
+
+        /* Firmware update in flight: dedicated screen, no mode changes. */
+        ota_status_t ota;
+        (void)ota_get_status(&ota);
+        const bool ota_active = ota.state == OTA_STATE_DOWNLOADING ||
+                                ota.state == OTA_STATE_VERIFYING ||
+                                ota.state == OTA_STATE_READY;
+        if (ota_active || (ota.state == OTA_STATE_FAILED && ota_screen_shown)) {
+            (void)ui_diagnostic_show_updating(ota.available_version, ota.percent,
+                                              ota_phase_text(&ota),
+                                              ota.state == OTA_STATE_FAILED);
+            set_status_led(&led, LED_ORANGE);
+            s_tracking_started = false;
+            if (ota.state == OTA_STATE_FAILED) {
+                if (ota_failed_since == 0U) {
+                    ota_failed_since = xTaskGetTickCount();
+                } else if (interval_elapsed(ota_failed_since, 8000U)) {
+                    /* Show the error briefly, then resume tracking. */
+                    ota_screen_shown = false;
+                    ota_failed_since = 0U;
+                    (void)adsb_client_set_online(status.connected);
+                    (void)storage_logger_start(s_board_status.sd_mounted, &settings);
+                }
+            } else {
+                ota_screen_shown = true;
+                ota_failed_since = 0U;
+            }
+            vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_INTERVAL_MS));
+            continue;
+        }
 
         const bool status_changed = !have_last ||
                                     status.connected != last_connected ||
@@ -790,6 +873,8 @@ static setup_reason_t run_tracking_mode(void)
             }
         }
 
+        ota_selftest(status.connected, status_web_is_running());
+
         if (boot_hold_triggered(&boot_hold)) {
             ESP_LOGI(TAG, "BOOT hold requested secure setup mode");
             return SETUP_REASON_BUTTON;
@@ -847,6 +932,7 @@ void app_main(void)
     set_rgb(12, 4, 0);
 
     ESP_ERROR_CHECK(connectivity_init());
+    ESP_ERROR_CHECK(ota_init(OTA_MANIFEST_URL, ota_prepare, NULL));
     ESP_ERROR_CHECK(adsb_client_start(&s_settings));
 
     if (!s_config.wifi_configured) {
