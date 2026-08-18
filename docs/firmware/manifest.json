@@ -1,8 +1,8 @@
 {
-  "version": "1.6.1",
-  "size": 1797536,
-  "sha256": "13af16643d35b0343195067361173d492d17bf69c0a2532b017994ff3f20a209",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.1/airtrack-1.6.1.bin",
-  "notes": "First over-the-air release: verifies the dashboard update path from 1.6.0.",
+  "version": "1.6.2",
+  "size": 1797664,
+  "sha256": "5c113fcda5d3e77c5129e2966da51d0b8ecd1e9e02aef69ed038d998d81884b2",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.2/airtrack-1.6.2.bin",
+  "notes": "Dashboard: tidier Firmware / Update rows in the System card with a proper control row and progress bar.",
   "released": "2026-08-17"
 }
