@@ -1223,13 +1223,12 @@ static esp_err_t send_system_card(httpd_req_t *request,
     if (result == ESP_OK) {
         char partition[640];
         const int length = snprintf(partition, sizeof(partition),
-            "</span> <small style=\"color:var(--muted);font-weight:500\">slot %s%s</small> "
-            "<button type=button id=otacheck class=ghost style=\"padding:6px 12px;margin-left:8px\">"
-            "Check for updates</button></b>"
-            "<span>Update</span><b><span id=otamsg>%s</span> "
-            "<button type=button id=otainstall style=\"padding:6px 12px;margin-left:8px\" hidden>Install</button>"
-            "<div id=otabar hidden style=\"height:8px;background:#e3e8ef;border-radius:4px;margin-top:8px;overflow:hidden\">"
-            "<div id=otafill style=\"height:100%%;width:0;background:var(--blue)\"></div></div></b>",
+            "</span> <small class=slot>slot %s%s</small></b>"
+            "<span>Update</span><b id=otamsg>%s</b>"
+            "<div class=otarow>"
+            "<button type=button id=otacheck class=ghost>Check for updates</button>"
+            "<button type=button id=otainstall hidden>Install</button>"
+            "<div id=otabar hidden><div id=otafill></div></div></div>",
             ota.running_partition, ota.pending_verify ? " (verifying)" : "",
             ota.state == OTA_STATE_AVAILABLE ? "Update available"
             : ota.state == OTA_STATE_UP_TO_DATE ? "Up to date" : "Not checked yet");

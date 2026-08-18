@@ -79,3 +79,8 @@ footer{text-align:center;color:var(--muted);font-size:.9rem;padding:16px}
 a.ghost{font:inherit;font-weight:700;border-radius:8px;padding:8px 14px;border:1px solid #c9d3e0;background:#fff;color:var(--ink);text-decoration:none}
 #logrows td{white-space:nowrap}
 button.danger{color:var(--bad);border-color:#f0b4b4}button.danger:hover{background:#fdeeee}
+.slot{color:var(--muted);font-weight:500;font-size:.85rem;margin-left:6px}
+.otarow{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:2px 0 8px}
+.otarow button{padding:8px 14px}
+#otabar{flex:1 1 180px;height:8px;background:#e3e8ef;border-radius:4px;overflow:hidden}
+#otafill{height:100%;width:0;background:var(--blue);transition:width .4s}
