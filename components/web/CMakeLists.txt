@@ -15,6 +15,7 @@ idf_component_register(
     PRIV_REQUIRES
         esp_app_format
         esp_hw_support
+        esp_timer
         freertos
         log
 )

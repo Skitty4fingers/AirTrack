@@ -154,18 +154,40 @@
     return f;
   }
   var otaTimer = null, otaVersion = '';
+  function ago(sec) {
+    if (sec == null || sec < 0) return '';
+    if (sec < 60) return 'checked just now';
+    if (sec < 3600) return 'checked ' + Math.floor(sec / 60) + ' min ago';
+    return 'checked ' + Math.floor(sec / 3600) + ' h ago';
+  }
   function otaRender(o) {
-    var msg = $('otamsg'), inst = $('otainstall'), bar = $('otabar'), fill = $('otafill');
-    if (!msg) return;
+    var sub = $('otasub'), inst = $('otainstall'), bar = $('otabar'), fill = $('otafill');
+    if (!sub) return;
     otaVersion = o.available || '';
     var text = { idle: 'Not checked yet', checking: 'Checking…',
-      up_to_date: 'Up to date' + (o.available ? ' (latest ' + o.available + ')' : ''),
-      available: 'Version ' + o.available + ' available' + (o.notes ? ' — ' + o.notes : ''),
-      downloading: 'Downloading ' + o.available + ' … ' + o.percent + '%',
+      up_to_date: 'You are on the latest version',
+      available: 'A newer version is available',
+      downloading: 'Downloading ' + o.available + ' … ' + o.percent + '%' +
+        (o.size ? ' (' + Math.round(o.downloaded / 1024) + ' / ' + Math.round(o.size / 1024) + ' KiB)' : ''),
       verifying: 'Verifying image…', ready: 'Installed — restarting…',
-      failed: 'Update failed: ' + o.error }[o.state] || o.state;
-    msg.textContent = text;
-    if (inst) { inst.hidden = o.state !== 'available'; inst.textContent = 'Install ' + o.available; }
+      failed: 'Update failed: ' + (o.error || '') }[o.state] || o.state;
+    sub.textContent = text;
+    var latest = $('otalatest'), checked = $('otachecked');
+    if (latest) latest.textContent = o.available || '—';
+    if (checked) {
+      var parts = [];
+      if (o.released) parts.push('released ' + o.released);
+      var a = ago(o.checked_age_s); if (a) parts.push(a);
+      checked.textContent = o.available ? parts.join(' · ') : (o.state === 'checking' ? 'checking…' : 'press Check for updates');
+    }
+    var notes = $('otanotes'), np = $('otanotesp'), nv = $('otanotesv');
+    if (notes) {
+      notes.hidden = !(o.available && o.notes);
+      if (np) np.textContent = o.notes || '';
+      if (nv) nv.textContent = (o.available || '') + (o.state === 'up_to_date' ? ' (installed)' : '');
+    }
+    if (inst) { inst.hidden = o.state !== 'available'; inst.textContent = 'Install ' + (o.available || ''); }
+    var oc = $('otacheck'); if (oc) oc.disabled = !!(o.busy || o.state === 'checking' || o.state === 'downloading' || o.state === 'verifying' || o.state === 'ready');
     if (bar) { bar.hidden = !(o.state === 'downloading' || o.state === 'verifying' || o.state === 'ready'); }
     if (fill) fill.style.width = (o.state === 'ready' || o.state === 'verifying' ? 100 : o.percent) + '%';
     var still = o.state === 'checking' || o.state === 'downloading' || o.state === 'verifying' || o.busy;
@@ -176,21 +198,21 @@
   function otaPoll() { fetch('/api/v1/ota/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(otaRender).catch(function () {}); }
   function waitForReboot(version) {
     if (otaTimer) { clearInterval(otaTimer); otaTimer = null; }
-    var msg = $('otamsg'); if (msg) msg.textContent = 'Restarting into ' + version + ' — reconnecting…';
+    var sub = $('otasub'); if (sub) sub.textContent = 'Restarting into ' + version + ' — reconnecting…';
     var tries = 0;
     var t = setInterval(function () {
       tries++;
       fetch('/api/v1/status', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
         if (j.firmware === version) { clearInterval(t); location.reload(); }
       }).catch(function () {});
-      if (tries > 120) { clearInterval(t); if (msg) msg.textContent = 'Device did not come back on this address; check the LCD.'; }
+      if (tries > 120) { clearInterval(t); if (sub) sub.textContent = 'Device did not come back on this address; check the LCD.'; }
     }, 2000);
   }
   var oc = $('otacheck');
   if (oc) oc.onclick = function () {
     post(csrfForm('/api/v1/ota/check'), function (r) {
       if (!r.ok) { toast('Check failed: ' + (r.j.error || ''), 'bad'); return; }
-      otaRender({ state: 'checking', busy: true, percent: 0 });
+      otaRender({ state: 'checking', busy: true, percent: 0, available: otaVersion });
     });
   };
   var oi = $('otainstall');

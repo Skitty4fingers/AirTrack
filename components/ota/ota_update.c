@@ -190,6 +190,7 @@ static void run_check(void)
     char version[OTA_VERSION_MAX_BYTES + 1U] = "";
     char url[OTA_URL_MAX_BYTES + 1U] = "";
     char notes[OTA_NOTES_MAX_BYTES + 1U] = "";
+    char released[11] = "";
     char sha_text[80] = "";
     uint8_t sha[32];
     const cJSON *size_item = cJSON_GetObjectItemCaseSensitive(root, "size");
@@ -200,6 +201,7 @@ static void run_check(void)
         parse_hex_sha256(sha_text, sha) && cJSON_IsNumber(size_item) &&
         size_item->valuedouble >= OTA_MIN_IMAGE_BYTES && allowed_https_url(url);
     (void)copy_json_string(cJSON_GetObjectItemCaseSensitive(root, "notes"), notes, sizeof(notes));
+    (void)copy_json_string(cJSON_GetObjectItemCaseSensitive(root, "released"), released, sizeof(released));
     const uint32_t size = ok ? (uint32_t)size_item->valuedouble : 0U;
     cJSON_Delete(root);
     if (!ok) {
@@ -213,6 +215,7 @@ static void run_check(void)
     s_ota.have_manifest = true;
     (void)snprintf(s_ota.status.available_version, sizeof(s_ota.status.available_version), "%s", version);
     (void)snprintf(s_ota.status.notes, sizeof(s_ota.status.notes), "%s", notes);
+    memcpy(s_ota.status.released, released, sizeof(released));
     s_ota.status.size = size;
     s_ota.status.checked_monotonic_ms = esp_timer_get_time() / 1000LL;
     const bool newer = ota_compare_versions(version, s_ota.status.current_version) > 0;

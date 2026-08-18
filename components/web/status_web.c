@@ -11,6 +11,7 @@
 #include <strings.h>
 
 #include "esp_app_desc.h"
+#include "esp_timer.h"
 #include "ota_update.h"
 #include "storage_logger.h"
 #include "esp_http_server.h"
@@ -94,6 +95,7 @@ extern const char app_js_end[] asm("_binary_app_js_end");
 #define ICON_PIN "<svg viewBox=\"0 0 24 24\"><path d=\"M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z\"/></svg>"
 #define ICON_MONITOR "<svg viewBox=\"0 0 24 24\"><path d=\"M21 2H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H8v2h8v-2h-2v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H3V4h18z\"/></svg>"
 #define ICON_SD "<svg viewBox=\"0 0 24 24\"><path d=\"M18 2h-8L4 8v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-6 6H10V4h2zm3 0h-2V4h2zm3 0h-2V4h2z\"/></svg>"
+#define ICON_DOWNLOAD "<svg viewBox=\"0 0 24 24\"><path d=\"M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z\"/></svg>"
 #define ICON_GEAR "<svg viewBox=\"0 0 24 24\"><path d=\"M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 0-.5.4L9 5.1a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1a7.3 7.3 0 0 0 1.7 1l.4 2.6c0 .3.2.5.5.5h4c.3 0 .5-.2.5-.5l.4-2.6a7.3 7.3 0 0 0 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z\"/></svg>"
 #define ICON_WIFI "<svg viewBox=\"0 0 24 24\"><path d=\"M12 21l3.5-4.7a5.9 5.9 0 0 0-7 0zm0-9a10 10 0 0 0-6.4 2.3l1.8 2.4a7 7 0 0 1 9.2 0l1.8-2.4A10 10 0 0 0 12 12zm0-6A16 16 0 0 0 1.5 9.9l1.8 2.4a13 13 0 0 1 17.4 0l1.8-2.4A16 16 0 0 0 12 6z\"/></svg>"
 #define ICON_CLOUD "<svg viewBox=\"0 0 24 24\"><path d=\"M19.4 10A7.5 7.5 0 0 0 5.4 8 6 6 0 0 0 6 20h13a5 5 0 0 0 .4-10z\"/></svg>"
@@ -112,6 +114,7 @@ static const char PAGE_HEAD[] =
     "<a href=#location>" ICON_PIN "Location</a>"
     "<a href=#display>" ICON_MONITOR "Display</a>"
     "<a href=#storage>" ICON_SD "Storage</a>"
+    "<a href=#updates>" ICON_DOWNLOAD "Updates</a>"
     "<a href=#system>" ICON_GEAR "System</a></nav></aside>"
     "<div class=page><header class=top>"
     "<span class=st><i class=dot></i><b class=ok>ONLINE</b></span>"
@@ -1181,6 +1184,128 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
     return result;
 }
 
+static const char *ota_state_text(const ota_status_t *ota)
+{
+    switch (ota->state) {
+    case OTA_STATE_CHECKING: return "Checking&hellip;";
+    case OTA_STATE_UP_TO_DATE: return "You are on the latest version";
+    case OTA_STATE_AVAILABLE: return "A newer version is available";
+    case OTA_STATE_DOWNLOADING: return "Downloading&hellip;";
+    case OTA_STATE_VERIFYING: return "Verifying image&hellip;";
+    case OTA_STATE_READY: return "Installed &mdash; restarting&hellip;";
+    case OTA_STATE_FAILED: return "Update failed";
+    case OTA_STATE_IDLE:
+    default: return "Not checked yet";
+    }
+}
+
+static esp_err_t send_updates_card(httpd_req_t *request)
+{
+    char version[STATUS_WEB_VERSION_MAX_BYTES + 1U];
+    copy_firmware_version(version);
+    ota_status_t ota;
+    (void)ota_get_status(&ota);
+    const bool have_manifest = ota.available_version[0] != '\0';
+    esp_err_t result = send_html_chunk(request,
+        "<section class=card id=updates><div class=row><div><h2>Updates</h2>"
+        "<p class=sub id=otasub>");
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, ota_state_text(&ota));
+    }
+    if (result == ESP_OK && ota.state == OTA_STATE_FAILED && ota.error[0] != '\0') {
+        result = send_html_chunk(request, ": ");
+        if (result == ESP_OK) {
+            result = send_html_escaped(request, ota.error);
+        }
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "</p></div><span class=otabtns>"
+            "<button type=button id=otacheck class=ghost>Check for updates</button> "
+            "<button type=button id=otainstall");
+    }
+    if (result == ESP_OK && ota.state != OTA_STATE_AVAILABLE) {
+        result = send_html_chunk(request, " hidden");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, ">Install ");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, ota.available_version);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "</button></span></div>"
+            "<div class=vers><div class=ver><span>Installed</span><b id=otacur>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, version);
+    }
+    if (result == ESP_OK) {
+        char slot[64];
+        const int length = snprintf(slot, sizeof(slot),
+            "</b><small>slot %s%s</small></div>",
+            ota.running_partition, ota.pending_verify ? " &middot; verifying" : "");
+        result = send_chunk_or_size(request, slot, length, sizeof(slot));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "<div class=ver><span>Latest</span><b id=otalatest>");
+    }
+    if (result == ESP_OK) {
+        result = have_manifest ? send_html_escaped(request, ota.available_version)
+                               : send_html_chunk(request, "&mdash;");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</b><small id=otachecked>");
+    }
+    if (result == ESP_OK) {
+        if (!have_manifest) {
+            result = send_html_chunk(request, "press Check for updates");
+        } else if (ota.released[0] != '\0') {
+            result = send_html_chunk(request, "released ");
+            if (result == ESP_OK) {
+                result = send_html_escaped(request, ota.released);
+            }
+        } else {
+            result = send_html_chunk(request, "from the release manifest");
+        }
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "</small></div></div>"
+            "<div id=otabar hidden><div id=otafill></div></div>"
+            "<div id=otanotes class=notes");
+    }
+    if (result == ESP_OK && (!have_manifest || ota.notes[0] == '\0')) {
+        result = send_html_chunk(request, " hidden");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "><h3>Release notes <span class=val id=otanotesv>");
+    }
+    if (result == ESP_OK && have_manifest) {
+        result = send_html_escaped(request, ota.available_version);
+        if (result == ESP_OK && ota.state == OTA_STATE_UP_TO_DATE) {
+            result = send_html_chunk(request, " (installed)");
+        }
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</span></h3><p id=otanotesp>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_escaped(request, ota.notes);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request,
+            "</p></div><p class=hint>Checks the release manifest on GitHub Pages "
+            "over HTTPS. An update streams into the spare firmware slot, is verified "
+            "by size and SHA-256, and the device restarts into it; the previous "
+            "firmware stays as an automatic rollback if the new one fails to start. "
+            "Tracking pauses during the download.</p></section>");
+    }
+    return result;
+}
+
 static esp_err_t send_system_card(httpd_req_t *request,
                                   const status_web_snapshot_storage_t *snapshot)
 {
@@ -1221,17 +1346,10 @@ static esp_err_t send_system_card(httpd_req_t *request,
         result = send_html_escaped(request, version);
     }
     if (result == ESP_OK) {
-        char partition[640];
+        char partition[96];
         const int length = snprintf(partition, sizeof(partition),
-            "</span> <small class=slot>slot %s%s</small></b>"
-            "<span>Update</span><b id=otamsg>%s</b>"
-            "<div class=otarow>"
-            "<button type=button id=otacheck class=ghost>Check for updates</button>"
-            "<button type=button id=otainstall hidden>Install</button>"
-            "<div id=otabar hidden><div id=otafill></div></div></div>",
-            ota.running_partition, ota.pending_verify ? " (verifying)" : "",
-            ota.state == OTA_STATE_AVAILABLE ? "Update available"
-            : ota.state == OTA_STATE_UP_TO_DATE ? "Up to date" : "Not checked yet");
+            "</span> <small class=slot>slot %s%s</small></b>",
+            ota.running_partition, ota.pending_verify ? " (verifying)" : "");
         result = send_chunk_or_size(request, partition, length, sizeof(partition));
     }
     if (result == ESP_OK) {
@@ -1344,6 +1462,9 @@ static esp_err_t status_page_handler(httpd_req_t *request)
     }
     if (result == ESP_OK) {
         result = send_settings_cards(request, &snapshot);
+    }
+    if (result == ESP_OK) {
+        result = send_updates_card(request);
     }
     if (result == ESP_OK) {
         result = send_system_card(request, &snapshot);
@@ -2376,14 +2497,18 @@ static esp_err_t send_ota_status_json(httpd_req_t *request)
         result = set_security_headers(request);
     }
     if (result == ESP_OK) {
-        char head[160];
+        char head[224];
+        const int64_t now_ms = esp_timer_get_time() / 1000LL;
+        const long checked_age_s = ota.checked_monotonic_ms > 0
+            ? (long)((now_ms - ota.checked_monotonic_ms) / 1000LL) : -1L;
         const int length = snprintf(head, sizeof(head),
             "{\"state\":\"%s\",\"busy\":%s,\"percent\":%u,\"downloaded\":%lu,"
-            "\"size\":%lu,\"pending_verify\":%s,\"partition\":\"%s\",\"current\":\"",
+            "\"size\":%lu,\"pending_verify\":%s,\"partition\":\"%s\","
+            "\"checked_age_s\":%ld,\"released\":\"%.10s\",\"current\":\"",
             ota_state_name(ota.state), ota_busy() ? "true" : "false",
             (unsigned)ota.percent, (unsigned long)ota.downloaded,
             (unsigned long)ota.size, ota.pending_verify ? "true" : "false",
-            ota.running_partition);
+            ota.running_partition, checked_age_s, ota.released);
         result = send_chunk_or_size(request, head, length, sizeof(head));
     }
     if (result == ESP_OK) {

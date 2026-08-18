@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define OTA_VERSION_MAX_BYTES 31U
-#define OTA_NOTES_MAX_BYTES 159U
+#define OTA_NOTES_MAX_BYTES 480U
 #define OTA_URL_MAX_BYTES 255U
 #define OTA_ERROR_MAX_BYTES 63U
 
@@ -31,6 +31,7 @@ typedef struct {
     char current_version[OTA_VERSION_MAX_BYTES + 1U];
     char available_version[OTA_VERSION_MAX_BYTES + 1U];
     char notes[OTA_NOTES_MAX_BYTES + 1U];
+    char released[11];              /* manifest "released" YYYY-MM-DD, or "" */
     uint32_t size;
     uint32_t downloaded;
     uint8_t percent;

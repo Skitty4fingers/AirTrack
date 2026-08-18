@@ -55,10 +55,13 @@ device dashboard, System card
   within 3 minutes, otherwise the bootloader boots the previous slot. This is
   a bootloader option, so each unit gets **one** more USB flash (bootloader +
   first OTA-capable firmware) — both are on the bench now.
-- Dashboard System card: *Check for updates* → *Up to date* / *1.6.0
-  available — notes — [Install]* → progress bar → reconnect and show the new
-  version. Endpoints: `GET /api/v1/ota/check`, `GET /api/v1/ota/status`,
-  `POST /api/v1/ota/start` (CSRF, canonical Host, as every other mutation).
+- Dashboard **Updates** card (own card since 1.6.3): *Check for updates* →
+  installed vs latest tiles (with the manifest's `released` date and how long
+  ago it was checked), status line, release notes block, *Install x.y.z* →
+  progress bar → reconnect and reload on the new version. Endpoints:
+  `POST /api/v1/ota/check`, `GET /api/v1/ota/status`, `POST /api/v1/ota/start`
+  (CSRF, canonical Host, as every other mutation). Manifest `notes` may
+  contain newlines and up to 480 bytes.
 - Only newer versions are offered; settings/NVS are never touched.
 
 ## Security in one paragraph

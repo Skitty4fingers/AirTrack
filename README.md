@@ -42,7 +42,16 @@ browser's location back to the dashboard:
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.5.0.
+The connected unit is running AirTrack 1.6.3.
+
+Changes in 1.6.x:
+
+- Over-the-air updates from the dashboard (1.6.0): manifest check, streamed
+  download into the inactive slot, SHA-256 verification, automatic rollback.
+- 1.6.3: updates get their own **Updates** card (installed vs latest version,
+  release date, release notes from the manifest, progress bar); the System
+  card keeps just the firmware row. `/api/v1/ota/status` adds `released`
+  and `checked_age_s`; manifest notes may be several lines (up to 480 bytes).
 
 Changes in 1.5.0:
 
@@ -189,9 +198,16 @@ numeric address shown at the bottom of the LCD and enter the actual fixed
 latitude, longitude, and radius once. Afterward, hold BOOT for five seconds to
 open the isolated setup hotspot when Wi-Fi or location/radius needs changing.
 
-The current image is about 1.72 MB and leaves 57 percent of each 3,904 KiB
-OTA app slot free. The partition table reserves dual OTA slots, but signed web
-OTA and rollback are intentionally deferred; update over native USB.
+The current image is about 1.8 MB and leaves 55 percent of each 3,904 KiB
+OTA app slot free. Since 1.6.0 the dashboard's **Updates** card checks the
+release manifest published from this repository (GitHub Pages,
+`docs/firmware/manifest.json`), shows the installed and latest versions with
+the release notes, and installs over the air into the spare slot with size and
+SHA-256 verification; the bootloader rolls back automatically if the new image
+fails its start-up self-test. Releases are published with
+`tools/publish_release.sh` (see `docs/OTA_PLAN.md`). The first installation
+of a 1.6.x image (with the rollback-enabled bootloader) is done over native
+USB.
 
 ## Build, verify, and flash
 
