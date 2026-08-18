@@ -1,7 +1,7 @@
 {
   "version": "1.6.1",
   "size": 1797536,
-  "sha256": "530af52a0d85b9b73d24aafe0a2f6057cdc6c4ca68770d257b92fb50c0ba02aa",
+  "sha256": "13af16643d35b0343195067361173d492d17bf69c0a2532b017994ff3f20a209",
   "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.1/airtrack-1.6.1.bin",
   "notes": "First over-the-air release: verifies the dashboard update path from 1.6.0.",
   "released": "2026-08-17"
