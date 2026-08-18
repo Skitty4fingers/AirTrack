@@ -6,9 +6,9 @@ idf_dir="${IDF_PATH:-/home/skitty/esp/esp-idf-v5.5.5}"
 build_dir="${project_dir}/build-production"
 size_limit_bytes=$((3584 * 1024))
 
-if ! grep -q 'project(airtrack VERSION 1\.6\.0)' \
+if ! grep -q 'project(airtrack VERSION 1\.6\.1)' \
     "${project_dir}/CMakeLists.txt"; then
-    echo "release check: project version is not 1.6.0" >&2
+    echo "release check: project version is not 1.6.1" >&2
     exit 1
 fi
 
