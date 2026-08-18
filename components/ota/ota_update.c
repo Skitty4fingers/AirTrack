@@ -165,8 +165,8 @@ static void run_check(void)
         .user_data = &response,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = OTA_MANIFEST_TIMEOUT_MS,
-        .buffer_size = 1024,
-        .buffer_size_tx = 512,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
         .user_agent = "AirTrack-OTA (ESP32-C6)",
         .max_redirection_count = 2,
     };
@@ -256,8 +256,10 @@ static void run_install(void)
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = OTA_DOWNLOAD_TIMEOUT_MS,
-        .buffer_size = 2048,
-        .buffer_size_tx = 512,
+        /* Release assets redirect to a signed URL of ~1 KiB; both buffers
+         * must hold it (request line on TX, Location header on RX). */
+        .buffer_size = 4096,
+        .buffer_size_tx = 2048,
         .user_agent = "AirTrack-OTA (ESP32-C6)",
         .max_redirection_count = 3,
         .keep_alive_enable = true,
