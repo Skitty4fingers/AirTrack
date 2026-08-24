@@ -30,7 +30,8 @@ sample values):
 ![AirTrack LCD states](docs/ui/lcd-states.png)
 
 **Dashboard** (`http://<device-ip>/` or `http://airtrack.local/`), desktop and
-phone widths:
+phone widths, captured from a device running 1.6.3 (network name, address, and
+coordinates are stand-ins):
 
 <p>
   <img src="docs/ui/dashboard.png" alt="AirTrack dashboard, desktop" width="66%">
