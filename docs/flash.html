@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AirTrack · install firmware</title>
+<meta name="description" content="Install AirTrack firmware on a Waveshare ESP32-C6-LCD-1.47 straight from the browser.">
+<style>
+  :root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--navy:#0d2a4d;--blue:#1e88e5;--ink:#12213a;--muted:#5d6b80;--line:#e3e8ef;--bg:#f3f5f8;--ok:#1aa34a;--warn:#e69500;--bad:#d93737}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);padding:24px 20px 40px}
+  main{width:min(100%,720px);margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px;font-size:1.4rem;font-weight:800;color:var(--navy);margin-bottom:16px}
+  .brand svg{width:26px;height:26px;fill:var(--navy)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 1px 2px #0d2a4d0f;margin-bottom:16px}
+  h1{font-size:1.35rem;margin:0 0 8px}
+  h2{font-size:1.05rem;margin:0 0 10px}
+  p{line-height:1.55;color:var(--muted);margin:.5rem 0}
+  a{color:var(--blue)}
+  .lede{color:var(--ink)}
+  .vers{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0 8px}
+  .ver{border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+  .ver span{display:block;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  .ver b{display:block;font-size:1.5rem;font-weight:700;line-height:1.25;overflow-wrap:anywhere}
+  .ver small{color:var(--muted);font-size:.85rem;overflow-wrap:anywhere}
+  .notes{white-space:pre-line;line-height:1.55;font-size:.95rem;background:var(--bg);border-left:3px solid var(--blue);border-radius:6px;padding:10px 14px;color:var(--ink);margin:6px 0 0}
+  .go{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:18px}
+  esp-web-install-button{--esp-tools-button-color:#fff;--esp-tools-button-text-color:#fff}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:8px;border:1px solid var(--blue);background:var(--blue);color:#fff;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}
+  .btn svg{width:18px;height:18px;fill:currentColor}
+  .note{font-size:.9rem}
+  .warn{border-left:3px solid var(--warn);background:#fff8ec;border-radius:6px;padding:10px 14px;color:var(--ink);font-size:.93rem;line-height:1.55}
+  .bad{border-left-color:var(--bad);background:#fdf0f0}
+  ol,ul{color:var(--muted);line-height:1.6;padding-left:20px;margin:.5rem 0}
+  ol b,ul b{color:var(--ink)}
+  code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:.9em;overflow-wrap:anywhere}
+  .hash{font-size:.82rem;word-break:break-all;color:var(--muted)}
+  details{margin-top:10px}summary{cursor:pointer;font-weight:600;color:var(--ink)}
+  footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:8px}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>AirTrack</div>
+
+  <div class="card">
+    <h1>Install AirTrack on your device</h1>
+    <p class="lede">Plug a Waveshare ESP32-C6-LCD-1.47 into this computer with a USB-C data cable and press Install. The firmware is written straight from this page over USB &mdash; nothing to download, no toolchain, no command line.</p>
+
+    <div class="vers">
+      <div class="ver"><span>Firmware</span><b id="ver">&mdash;</b><small id="released">reading the manifest&hellip;</small></div>
+      <div class="ver"><span>Hardware</span><b>ESP32-C6</b><small>Waveshare LCD 1.47&Prime; &middot; 8&nbsp;MB flash</small></div>
+    </div>
+
+    <div id="notesbox" hidden>
+      <p class="note" style="margin-bottom:4px"><b>Release notes</b></p>
+      <p class="notes" id="notes"></p>
+    </div>
+
+    <div class="go">
+      <esp-web-install-button manifest="firmware/web-flash.json">
+        <button slot="activate" class="btn"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>Install AirTrack</button>
+        <div slot="unsupported" class="warn bad">This browser cannot talk to USB devices. Use <b>Chrome</b>, <b>Edge</b>, or <b>Opera</b> on a desktop computer &mdash; Web Serial is not available in Firefox, Safari, or on phones and tablets. You can still install with <a href="https://github.com/Skitty4fingers/AirTrack#build-verify-and-flash">esptool</a>.</div>
+        <div slot="not-allowed" class="warn bad">This page must be opened over HTTPS for the browser to allow USB access.</div>
+      </esp-web-install-button>
+      <span class="note">Takes about a minute.</span>
+    </div>
+
+    <p class="warn" style="margin-top:16px"><b>This erases the device.</b> A first install writes the bootloader, partition table and firmware, and the installer offers to erase everything else &mdash; saved Wi-Fi, location and options. Say yes on a new or second-hand device. On a device that is already running AirTrack you normally do not need this page at all: use <b>Updates &rarr; Check for updates</b> on its own dashboard, which keeps every setting.</p>
+  </div>
+
+  <div class="card">
+    <h2>After it finishes</h2>
+    <ol>
+      <li>The display comes up and the device starts its own Wi-Fi hotspot, <code>AirTrack-XXXX</code>, with the password shown on screen.</li>
+      <li>Join that hotspot from a phone or laptop; the setup page opens by itself (or visit <code>http://192.168.4.1</code>).</li>
+      <li>Pick your home Wi-Fi and enter its password. Setting the tracking location is optional &mdash; leave it blank and the device starts around Seattle&ndash;Tacoma International until you set the real position.</li>
+      <li>The LCD then shows the address of the dashboard on your network. Open it to set location, radius, brightness, the night schedule and SD logging.</li>
+    </ol>
+    <p>From then on the device updates itself: <b>Updates &rarr; Check for updates</b> on the dashboard installs new releases over the air into its spare firmware slot, and rolls back automatically if an image fails to start.</p>
+  </div>
+
+  <div class="card">
+    <h2>If the device is not offered</h2>
+    <ul>
+      <li>Use a <b>data</b> USB-C cable. Many charge-only cables carry no data lines and the device will never appear in the port list.</li>
+      <li>Plug into the board's USB-C port and pick the entry that appears when you plug it in &mdash; on Windows it looks like <em>USB Serial Device (COMn)</em>, on macOS/Linux like <em>USB JTAG/serial debug unit</em>.</li>
+      <li>If it still will not connect, hold the <b>BOOT</b> button while plugging the cable in, then release it and press Install again.</li>
+      <li>Close anything else using the port (Arduino IDE, a serial monitor, another copy of this page).</li>
+    </ul>
+    <details>
+      <summary>Install manually instead</summary>
+      <p>The same image can be written with <a href="https://docs.espressif.com/projects/esptool/en/latest/">esptool</a>:</p>
+      <p><code>esptool.py --chip esp32c6 -b 460800 write_flash 0x0 <span id="dlname">airtrack-factory.bin</span></code></p>
+      <p><a id="dl" href="firmware/web-flash.json" download>Download the factory image</a> &middot; SHA-256 <span class="hash" id="hash">&mdash;</span></p>
+    </details>
+  </div>
+
+  <footer>
+    <a href="https://github.com/Skitty4fingers/AirTrack">AirTrack on GitHub</a> &middot;
+    <a href="https://github.com/Skitty4fingers/AirTrack/releases">Releases</a> &middot;
+    flashing by <a href="https://github.com/esphome/esp-web-tools">esp-web-tools</a> &middot;
+    aircraft data from <a href="https://adsb.fi">adsb.fi</a>
+  </footer>
+</main>
+
+<script type="module" src="vendor/esp-web-tools/install-button.js"></script>
+<script>
+(function () {
+  'use strict';
+  function text(id, value) { var e = document.getElementById(id); if (e) e.textContent = value; }
+
+  fetch('firmware/web-flash.json', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (m) {
+    text('ver', m.version || '—');
+    text('hash', m.sha256 || '—');
+    var part = m.builds && m.builds[0] && m.builds[0].parts && m.builds[0].parts[0];
+    if (part && part.path) {
+      text('dlname', part.path);
+      var dl = document.getElementById('dl');
+      if (dl) { dl.href = 'firmware/' + part.path; dl.setAttribute('download', part.path); }
+    }
+    /* The OTA manifest carries the release date and notes for the same version. */
+    return fetch('firmware/manifest.json', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (o) {
+      var size = m.size ? (Math.round(m.size / 1024 / 102.4) / 10) + ' MB' : '';
+      if (o.version === m.version) {
+        text('released', (o.released ? 'released ' + o.released : 'latest release') + (size ? ' · ' + size : ''));
+        if (o.notes) {
+          text('notes', o.notes);
+          document.getElementById('notesbox').hidden = false;
+        }
+      } else {
+        text('released', size || 'latest release');
+      }
+    });
+  }).catch(function () {
+    text('released', 'could not read the firmware manifest');
+  });
+})();
+</script>
+</body>
+</html>

@@ -101,7 +101,17 @@ GITHUB_TOKEN=... tools/publish_release.sh <version> "release notes"
 The script refuses a dirty tree or a version that does not match
 `CMakeLists.txt`, runs the gate below, uploads the artifact to the GitHub
 Release, and pushes `docs/firmware/manifest.json` (that push is what makes
-devices see the update).
+devices see the update). It also merges the bootloader, partition table,
+otadata, and app into `docs/firmware/airtrack-<version>-factory.bin`, updates
+`docs/firmware/web-flash.json`, and drops the previous factory image, which is
+what the browser installer (`docs/flash.html`) writes over USB.
+
+After publishing, check the installer page:
+
+- [ ] <https://skitty4fingers.github.io/AirTrack/flash.html> shows the new
+  version and its release notes.
+- [ ] In Chrome or Edge on a desktop, **Install** lists the device, erases,
+  writes, and the unit reboots into the setup hotspot.
 
 ## Reproduce the artifact gate
 

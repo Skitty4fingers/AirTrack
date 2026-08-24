@@ -8,6 +8,12 @@
 # 3. Creates GitHub Release v<version> and uploads airtrack-<version>.bin.
 # 4. Writes docs/firmware/manifest.json, commits, and pushes (GitHub Pages
 #    serves it at https://skitty4fingers.github.io/AirTrack/firmware/manifest.json).
+# 5. Merges bootloader + partition table + otadata + app into
+#    docs/firmware/airtrack-<version>-factory.bin and points
+#    docs/firmware/web-flash.json at it; that is what docs/flash.html writes
+#    over USB from the browser. The image has to live on the Pages origin:
+#    GitHub release assets are served without CORS headers, so a browser
+#    cannot fetch them cross-origin.
 #
 # Publishing the manifest is the step that makes the update visible to
 # devices; delete or edit that file to withdraw an offer.
@@ -67,6 +73,47 @@ upload_json="$(curl -sS "${auth[@]}" -H "Content-Type: application/octet-stream"
 download_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["browser_download_url"])' <<<"$upload_json")"
 echo "publish: uploaded ${download_url}"
 
+# Factory image for the browser installer: one blob written at offset 0.
+factory="airtrack-${version}-factory.bin"
+factory_path="${project_dir}/docs/firmware/${factory}"
+build_dir="${project_dir}/build-production"
+python3 -m esptool --chip esp32c6 merge_bin -o "$factory_path" \
+    --flash_mode dio --flash_size 8MB --flash_freq 80m \
+    0x0 "${build_dir}/bootloader/bootloader.bin" \
+    0x8000 "${build_dir}/partition_table/partition-table.bin" \
+    0xf000 "${build_dir}/ota_data_initial.bin" \
+    0x20000 "$image" >/dev/null
+factory_size="$(stat -c '%s' "$factory_path")"
+factory_sha="$(sha256sum "$factory_path" | cut -d' ' -f1)"
+echo "publish: ${factory} (${factory_size} bytes, ${factory_sha})"
+
+# Keep only the current factory image on Pages; older ones stay in the tags.
+for old_factory in "${project_dir}"/docs/firmware/airtrack-*-factory.bin; do
+    if [[ -f "$old_factory" && "$old_factory" != "$factory_path" ]]; then
+        git -C "$project_dir" rm -q --ignore-unmatch "$old_factory" || rm -f "$old_factory"
+    fi
+done
+
+python3 - "$version" "$factory" "$factory_size" "$factory_sha" "${project_dir}/docs/firmware/web-flash.json" <<'PY'
+import json, sys
+version, factory, size, sha256, path = sys.argv[1:6]
+manifest = {
+    "name": "AirTrack",
+    "version": version,
+    "new_install_prompt_erase": True,
+    "new_install_improv_wait_time": 0,
+    "sha256": sha256,
+    "size": int(size),
+    "builds": [{
+        "chipFamily": "ESP32-C6",
+        "parts": [{"path": factory, "offset": 0}],
+    }],
+}
+with open(path, "w") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+
 python3 - "$version" "$size" "$sha256" "$download_url" "$notes" "${project_dir}/docs/firmware/manifest.json" <<'PY'
 import json, sys, datetime
 version, size, sha256, url, notes, path = sys.argv[1:7]
@@ -83,8 +130,9 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
-git -C "$project_dir" add docs/firmware/manifest.json
+git -C "$project_dir" add -A docs/firmware
 git -C "$project_dir" -c user.name="skitty" -c user.email="scottsdamgaard@gmail.com" \
-    commit -q -m "Publish firmware ${version} (OTA manifest)"
+    commit -q -m "Publish firmware ${version} (OTA manifest and browser-flash image)"
 git -C "$project_dir" -c credential.helper='!f() { echo username=Skitty4fingers; echo "password=$GITHUB_TOKEN"; }; f' push
 echo "publish: manifest live shortly at https://skitty4fingers.github.io/AirTrack/firmware/manifest.json"
+echo "publish: browser installer at https://skitty4fingers.github.io/AirTrack/flash.html"

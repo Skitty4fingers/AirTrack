@@ -48,7 +48,9 @@ Changes in 1.6.x:
 
 - Over-the-air updates from the dashboard (1.6.0): manifest check, streamed
   download into the inactive slot, SHA-256 verification, automatic rollback.
-- 1.6.3: updates get their own **Updates** card (installed vs latest version,
+- 1.6.3: a browser installer at `docs/flash.html` (GitHub Pages) writes a
+  merged factory image over USB with Web Serial, so a new device needs no
+  toolchain; updates get their own **Updates** card (installed vs latest version,
   release date, release notes from the manifest, progress bar); the System
   card keeps just the firmware row. `/api/v1/ota/status` adds `released`
   and `checked_age_s`; manifest notes may be several lines (up to 480 bytes).
@@ -197,6 +199,23 @@ If Wi-Fi is already configured but the tracking location is not, open the
 numeric address shown at the bottom of the LCD and enter the actual fixed
 latitude, longitude, and radius once. Afterward, hold BOOT for five seconds to
 open the isolated setup hotspot when Wi-Fi or location/radius needs changing.
+
+### Install from a browser
+
+A blank or second-hand device can be flashed without any toolchain from
+<https://skitty4fingers.github.io/AirTrack/flash.html> in Chrome, Edge, or
+Opera on a desktop: plug the board in over USB-C, press **Install**, pick the
+serial port. The page writes a single factory image (bootloader, partition
+table, otadata, and firmware) with
+[esp-web-tools](https://github.com/esphome/esp-web-tools), which is vendored
+under `docs/vendor/` so the page makes no third-party requests. That image is
+committed to `docs/firmware/` rather than linked from the GitHub Release
+because release assets are served without CORS headers and a browser cannot
+fetch them cross-origin.
+
+Use it for a first install only; an installed device updates itself from
+**Updates** on its own dashboard and keeps its settings, while the browser
+installer offers to erase everything.
 
 The current image is about 1.8 MB and leaves 55 percent of each 3,904 KiB
 OTA app slot free. Since 1.6.0 the dashboard's **Updates** card checks the

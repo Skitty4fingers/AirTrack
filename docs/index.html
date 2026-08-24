@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AirTrack</title>
+<meta name="description" content="AirTrack shows the nearest aircraft overhead on a small ESP32-C6 display and a dashboard on your own network.">
+<style>
+  :root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--navy:#0d2a4d;--blue:#1e88e5;--ink:#12213a;--muted:#5d6b80;--line:#e3e8ef;--bg:#f3f5f8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);padding:32px 20px 40px}
+  main{width:min(100%,640px);margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px;font-size:1.5rem;font-weight:800;color:var(--navy);margin-bottom:6px}
+  .brand svg{width:28px;height:28px;fill:var(--navy)}
+  p{line-height:1.55;color:var(--muted);margin:.5rem 0}
+  a{color:var(--blue)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:0 1px 2px #0d2a4d0f;margin-top:16px;display:block;text-decoration:none;color:inherit}
+  a.card:hover{border-color:var(--blue)}
+  .card h2{font-size:1.05rem;margin:0 0 6px;color:var(--navy)}
+  .card p{margin:0;font-size:.95rem}
+  .tag{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:.82rem;color:var(--muted);margin-left:8px;vertical-align:middle}
+  footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:22px}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>AirTrack</div>
+  <p>The nearest aircraft overhead, on a small ESP32-C6 display and on a dashboard on your own network. Live positions come from <a href="https://adsb.fi">adsb.fi</a>.</p>
+
+  <a class="card" href="flash.html">
+    <h2>Install firmware from your browser<span class="tag" id="ver">latest</span></h2>
+    <p>Plug a Waveshare ESP32-C6-LCD-1.47 into a desktop Chrome, Edge, or Opera and flash it over USB &mdash; no toolchain, no downloads.</p>
+  </a>
+
+  <a class="card" href="https://github.com/Skitty4fingers/AirTrack">
+    <h2>Source, releases, and setup guide</h2>
+    <p>Firmware, dashboard, build instructions, and the release history on GitHub.</p>
+  </a>
+
+  <div class="card">
+    <h2>Location helper</h2>
+    <p>An AirTrack on your network links here when you press <b>Use my location</b>, because browsers only share coordinates over HTTPS. Opening <a href="locate.html">locate.html</a> directly is only useful with that device to hand the coordinates back to.</p>
+  </div>
+
+  <footer>Personal, non-commercial use &middot; not for navigation or collision avoidance</footer>
+</main>
+<script>
+fetch('firmware/manifest.json', { cache: 'no-store' })
+  .then(function (r) { return r.json(); })
+  .then(function (m) { if (m.version) document.getElementById('ver').textContent = m.version; })
+  .catch(function () {});
+</script>
+</body>
+</html>

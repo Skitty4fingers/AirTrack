@@ -1,0 +1,19 @@
+{
+  "name": "AirTrack",
+  "version": "1.6.3",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "sha256": "b915f3213499a9241e1a05f36959a36e75ff123dc684bc539394be9095903de6",
+  "size": 1932912,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "airtrack-1.6.3-factory.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
