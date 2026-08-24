@@ -10,12 +10,18 @@ and no PSRAM. Verify the flash capacity before installing it on another board
 revision. AirTrack is an enthusiast display, not a receiver, navigation aid,
 or collision-warning device.
 
+A finished build installs straight from
+<https://skitty4fingers.github.io/AirTrack/flash.html> over USB, with no
+toolchain; after that the device updates itself from its own dashboard. See
+[Install](#install).
+
 ## Screens
 
 Rendered from the current firmware: the LCD frames come from
 `tools/host_ui_render/render.sh` (the real LVGL UI code drawn on the host at
 2x), the dashboard captures are headless-Chromium screenshots of the live
-device. Design references are in [`docs/ui/`](docs/ui/).
+device, and the installer is captured from the published page. Design
+references are in [`docs/ui/`](docs/ui/).
 
 **Device** — single-flight focus with route and ETA, no recent reports, Wi-Fi
 lost, and setup (network names, addresses, and coordinates in all images are
@@ -40,6 +46,59 @@ browser's location back to the dashboard:
   <img src="docs/ui/locate-helper.png" alt="Locate helper" width="34%" align="top">
 </p>
 
+**Browser installer** (GitHub Pages), which writes the firmware to a blank
+board over USB:
+
+<p>
+  <img src="docs/ui/flash-page.png" alt="AirTrack browser installer" width="46%">
+</p>
+
+## Install
+
+### From a browser
+
+<https://skitty4fingers.github.io/AirTrack/flash.html> installs the current
+release over USB with nothing to download and no toolchain. It needs Chrome,
+Edge, or Opera on a desktop &mdash; Web Serial does not exist in Firefox,
+Safari, or on phones &mdash; and a USB-C *data* cable. Plug the board in, press
+**Install**, and pick the serial port that appears.
+
+The page writes one merged factory image (bootloader, partition table, OTA
+data, and firmware, at offset 0) using
+[esp-web-tools](https://github.com/esphome/esp-web-tools), and offers to erase
+the rest of the flash first; say yes on a new or second-hand board. When it
+finishes, the device starts its `AirTrack-xxxx` setup hotspot, so continue from
+a phone or laptop as with any fresh unit.
+
+Two notes on how that page is hosted:
+
+- esp-web-tools is vendored under
+  [`docs/vendor/`](docs/vendor/esp-web-tools/) (Apache-2.0) rather than loaded
+  from a CDN, so the page makes no third-party requests.
+- The factory image is committed to [`docs/firmware/`](docs/firmware/) and
+  served from GitHub Pages instead of being linked from the GitHub Release,
+  because release assets are served without an `Access-Control-Allow-Origin`
+  header and a browser cannot fetch them cross-origin.
+  `tools/publish_release.sh` rebuilds it on every release and drops the
+  previous one.
+
+### Updating a device that already runs AirTrack
+
+Use the dashboard, not the installer page &mdash; the installer erases stored
+settings. Since 1.6.0 the **Updates** card checks
+`docs/firmware/manifest.json` on GitHub Pages over HTTPS, shows the installed
+and latest versions with the release notes, and installs into the spare OTA
+slot with size and SHA-256 verification, keeping every setting. The bootloader
+returns to the previous slot by itself if a new image fails its start-up
+self-test. Releases are published with `tools/publish_release.sh`; see
+[the OTA notes](docs/OTA_PLAN.md).
+
+### From a workstation
+
+Building and flashing over USB with ESP-IDF is described under
+[Build, verify, and flash](#build-verify-and-flash). That is the path for
+development, and the fallback when no Web Serial browser is available.
+
 ## Firmware status
 
 The connected unit is running AirTrack 1.6.3.
@@ -48,12 +107,14 @@ Changes in 1.6.x:
 
 - Over-the-air updates from the dashboard (1.6.0): manifest check, streamed
   download into the inactive slot, SHA-256 verification, automatic rollback.
-- 1.6.3: a browser installer at `docs/flash.html` (GitHub Pages) writes a
-  merged factory image over USB with Web Serial, so a new device needs no
-  toolchain; updates get their own **Updates** card (installed vs latest version,
-  release date, release notes from the manifest, progress bar); the System
-  card keeps just the firmware row. `/api/v1/ota/status` adds `released`
-  and `checked_age_s`; manifest notes may be several lines (up to 480 bytes).
+- 1.6.3: updates get their own dashboard **Updates** card (installed against
+  latest version, release date, release notes from the manifest, progress bar)
+  and the System card keeps just the firmware row; `/api/v1/ota/status` adds
+  `released` and `checked_age_s`, and manifest notes may run to several lines
+  (up to 480 bytes). A browser installer on GitHub Pages
+  ([`docs/flash.html`](docs/flash.html)) writes a merged factory image over Web
+  Serial, so a blank board no longer needs a toolchain, and
+  [`docs/index.html`](docs/index.html) gives the published site a front page.
 
 Changes in 1.5.0:
 
@@ -200,33 +261,8 @@ numeric address shown at the bottom of the LCD and enter the actual fixed
 latitude, longitude, and radius once. Afterward, hold BOOT for five seconds to
 open the isolated setup hotspot when Wi-Fi or location/radius needs changing.
 
-### Install from a browser
-
-A blank or second-hand device can be flashed without any toolchain from
-<https://skitty4fingers.github.io/AirTrack/flash.html> in Chrome, Edge, or
-Opera on a desktop: plug the board in over USB-C, press **Install**, pick the
-serial port. The page writes a single factory image (bootloader, partition
-table, otadata, and firmware) with
-[esp-web-tools](https://github.com/esphome/esp-web-tools), which is vendored
-under `docs/vendor/` so the page makes no third-party requests. That image is
-committed to `docs/firmware/` rather than linked from the GitHub Release
-because release assets are served without CORS headers and a browser cannot
-fetch them cross-origin.
-
-Use it for a first install only; an installed device updates itself from
-**Updates** on its own dashboard and keeps its settings, while the browser
-installer offers to erase everything.
-
-The current image is about 1.8 MB and leaves 55 percent of each 3,904 KiB
-OTA app slot free. Since 1.6.0 the dashboard's **Updates** card checks the
-release manifest published from this repository (GitHub Pages,
-`docs/firmware/manifest.json`), shows the installed and latest versions with
-the release notes, and installs over the air into the spare slot with size and
-SHA-256 verification; the bootloader rolls back automatically if the new image
-fails its start-up self-test. Releases are published with
-`tools/publish_release.sh` (see `docs/OTA_PLAN.md`). The first installation
-of a 1.6.x image (with the rollback-enabled bootloader) is done over native
-USB.
+The current image is about 1.8 MB and leaves 55 percent of each 3,904 KiB OTA
+app slot free.
 
 ## Build, verify, and flash
 
@@ -242,6 +278,22 @@ The release check runs host tests, verifies the secure transport and
 non-formatting SD policies, builds the production image, enforces the image
 budget, and prints SHA-256 hashes. Flashing does not erase the NVS partition;
 do not run `erase-flash` when preserving configured Wi-Fi and settings.
+
+To build the single-file image the browser installer writes &mdash; useful for
+flashing another host with plain esptool &mdash; merge the four parts:
+
+```sh
+python3 -m esptool --chip esp32c6 merge_bin -o airtrack-factory.bin \
+    --flash_mode dio --flash_size 8MB --flash_freq 80m \
+    0x0 build-production/bootloader/bootloader.bin \
+    0x8000 build-production/partition_table/partition-table.bin \
+    0xf000 build-production/ota_data_initial.bin \
+    0x20000 build-production/airtrack.bin
+python3 -m esptool --chip esp32c6 -p /dev/ttyACM0 write_flash 0x0 airtrack-factory.bin
+```
+
+`tools/publish_release.sh` runs the same merge and commits the result under
+`docs/firmware/`, which is what GitHub Pages serves to the installer page.
 
 To review the LCD screens without the board, run
 `tools/host_ui_render/render.sh` (needs a host C compiler and the `build/`
