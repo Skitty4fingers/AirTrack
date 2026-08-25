@@ -3,51 +3,381 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AirTrack</title>
-<meta name="description" content="AirTrack shows the nearest aircraft overhead on a small ESP32-C6 display and a dashboard on your own network.">
+<title>AirTrack &mdash; the nearest aircraft overhead</title>
+<meta name="description" content="AirTrack turns a Waveshare ESP32-C6-LCD-1.47 into a live display of the closest aircraft overhead, with a dashboard on your own network. Install it from your browser.">
 <style>
-  :root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--navy:#0d2a4d;--blue:#1e88e5;--ink:#12213a;--muted:#5d6b80;--line:#e3e8ef;--bg:#f3f5f8}
+  :root{
+    color-scheme:light;
+    --navy:#0d2a4d;--navy-2:#123a68;--blue:#1e88e5;--sky:#3fb0ff;
+    --ink:#12213a;--muted:#5d6b80;--line:#e3e8ef;--bg:#f3f5f8;--card:#fff;
+    --ok:#1aa34a;--warn:#e69500;
+    --shadow:0 1px 2px #0d2a4d0f;--shadow-lg:0 18px 40px -24px #0d2a4d59;
+    --radius:14px;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);padding:32px 20px 40px}
-  main{width:min(100%,640px);margin:0 auto}
-  .brand{display:flex;align-items:center;gap:10px;font-size:1.5rem;font-weight:800;color:var(--navy);margin-bottom:6px}
-  .brand svg{width:28px;height:28px;fill:var(--navy)}
-  p{line-height:1.55;color:var(--muted);margin:.5rem 0}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{width:min(100%,1040px);margin:0 auto;padding:0 20px}
   a{color:var(--blue)}
-  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:0 1px 2px #0d2a4d0f;margin-top:16px;display:block;text-decoration:none;color:inherit}
-  a.card:hover{border-color:var(--blue)}
-  .card h2{font-size:1.05rem;margin:0 0 6px;color:var(--navy)}
-  .card p{margin:0;font-size:.95rem}
-  .tag{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:.82rem;color:var(--muted);margin-left:8px;vertical-align:middle}
-  footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:22px}
+  h1,h2,h3{line-height:1.2;margin:0}
+  p{margin:.6rem 0}
+
+  /* ---------- top bar ---------- */
+  .top{position:sticky;top:0;z-index:20;background:#0d2a4dd9;backdrop-filter:blur(8px);border-bottom:1px solid #ffffff1f}
+  .top .wrap{display:flex;align-items:center;gap:18px;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:1.12rem;color:#fff;text-decoration:none}
+  .brand svg{width:22px;height:22px;fill:#fff}
+  .top nav{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .top nav a{color:#cfe0f5;text-decoration:none;font-size:.93rem;font-weight:600;padding:7px 12px;border-radius:8px}
+  .top nav a:hover{background:#ffffff1a;color:#fff}
+  .top nav a.cta{background:var(--blue);color:#fff}
+  .top nav a.cta:hover{background:#3d9bee}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;background:linear-gradient(160deg,#0d2a4d 0%,#123a68 58%,#17497f 100%);color:#fff}
+  .hero .rings{position:absolute;inset:auto -160px -240px auto;width:720px;height:720px;opacity:.18;pointer-events:none}
+  .hero .rings circle{fill:none;stroke:#7ec9ff;stroke-width:1.5}
+  .hero .wrap{position:relative;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:40px;align-items:center;padding-top:64px;padding-bottom:64px}
+  .chip{display:inline-flex;align-items:center;gap:8px;background:#ffffff1f;border:1px solid #ffffff2e;color:#dbeaff;border-radius:99px;padding:5px 13px;font-size:.83rem;font-weight:600}
+  .chip .dot{width:7px;height:7px;border-radius:50%;background:#5ee08a}
+  .hero h1{font-size:clamp(2rem,4.3vw,3rem);font-weight:800;letter-spacing:-.02em;margin:16px 0 0}
+  .hero p.sub{color:#c7dcf5;font-size:1.08rem;max-width:34em;margin:14px 0 0}
+  .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:26px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:13px 22px;border-radius:10px;font-weight:700;text-decoration:none;border:1px solid transparent;font-size:1rem}
+  .btn svg{width:18px;height:18px;fill:currentColor}
+  .btn-primary{background:var(--blue);color:#fff;box-shadow:0 10px 26px -12px #1e88e5cc}
+  .btn-primary:hover{background:#3d9bee}
+  .btn-ghost{background:#ffffff14;border-color:#ffffff33;color:#fff}
+  .btn-ghost:hover{background:#ffffff24}
+  .hero .fine{color:#9fbcdd;font-size:.87rem;margin-top:14px}
+  .shot{border-radius:12px;border:1px solid #ffffff2b;background:#0b2340;box-shadow:var(--shadow-lg);overflow:hidden}
+  .shot img{display:block;width:100%;height:auto}
+
+  /* ---------- sections ---------- */
+  section{padding:56px 0}
+  .sec-head{max-width:44em}
+  .sec-head h2{font-size:1.6rem;font-weight:800;letter-spacing:-.01em}
+  .sec-head p{color:var(--muted)}
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:16px;margin-top:26px}
+  .feature{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)}
+  .feature .ico{width:38px;height:38px;border-radius:10px;background:#e8f2fd;display:grid;place-items:center;margin-bottom:12px}
+  .feature .ico svg{width:20px;height:20px;fill:var(--blue)}
+  .feature h3{font-size:1.02rem;font-weight:700}
+  .feature p{color:var(--muted);font-size:.94rem;margin:.4rem 0 0}
+
+  .gallery{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:16px;margin-top:26px;align-items:start}
+  figure{margin:0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  figure .frame{max-height:430px;overflow:hidden;background:var(--bg);border-bottom:1px solid var(--line)}
+  figure img{display:block;width:100%;height:auto}
+  figcaption{padding:12px 16px;color:var(--muted);font-size:.9rem}
+
+  /* ---------- FAQ ---------- */
+  .faq{background:var(--card);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .faq-group{margin-top:30px}
+  .faq-group h3{font-size:.83rem;letter-spacing:.09em;text-transform:uppercase;color:var(--blue);font-weight:700;margin-bottom:8px}
+  details{border-bottom:1px solid var(--line)}
+  details:first-of-type{border-top:1px solid var(--line)}
+  summary{cursor:pointer;list-style:none;padding:16px 40px 16px 2px;font-weight:650;font-size:1.02rem;position:relative;color:var(--ink)}
+  summary::-webkit-details-marker{display:none}
+  summary:hover{color:var(--blue)}
+  summary::after{content:"";position:absolute;right:12px;top:50%;width:9px;height:9px;margin-top:-6px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform .18s ease}
+  details[open] summary::after{transform:rotate(-135deg);margin-top:-2px}
+  details .body{padding:0 40px 18px 2px;color:var(--muted);max-width:64em}
+  details .body p{margin:.2rem 0 .7rem}
+  details .body p:last-child{margin-bottom:0}
+  code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:.88em;color:var(--ink);overflow-wrap:anywhere}
+
+  /* ---------- closing + footer ---------- */
+  .closing{text-align:center}
+  .closing .btn{margin-top:8px}
+  footer{background:var(--navy);color:#9fbcdd;padding:30px 0;font-size:.9rem}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;justify-content:space-between}
+  footer a{color:#cfe0f5}
+  .disclaimer{color:#7f9dc0;font-size:.85rem}
+
+  @media (max-width:880px){
+    .hero .wrap{grid-template-columns:minmax(0,1fr);padding-top:44px;padding-bottom:44px}
+    .hero .rings{display:none}
+    .gallery{grid-template-columns:minmax(0,1fr)}
+    .top nav a.hide-sm{display:none}
+    section{padding:42px 0}
+  }
 </style>
 </head>
 <body>
-<main>
-  <div class="brand"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>AirTrack</div>
-  <p>The nearest aircraft overhead, on a small ESP32-C6 display and on a dashboard on your own network. Live positions come from <a href="https://adsb.fi">adsb.fi</a>.</p>
 
-  <a class="card" href="flash.html">
-    <h2>Install firmware from your browser<span class="tag" id="ver">latest</span></h2>
-    <p>Plug a Waveshare ESP32-C6-LCD-1.47 into a desktop Chrome, Edge, or Opera and flash it over USB &mdash; no toolchain, no downloads.</p>
-  </a>
-
-  <a class="card" href="https://github.com/Skitty4fingers/AirTrack">
-    <h2>Source, releases, and setup guide</h2>
-    <p>Firmware, dashboard, build instructions, and the release history on GitHub.</p>
-  </a>
-
-  <div class="card">
-    <h2>Location helper</h2>
-    <p>An AirTrack on your network links here when you press <b>Use my location</b>, because browsers only share coordinates over HTTPS. Opening <a href="locate.html">locate.html</a> directly is only useful with that device to hand the coordinates back to.</p>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>AirTrack</a>
+    <nav>
+      <a class="hide-sm" href="#what">What it does</a>
+      <a href="#faq">FAQ</a>
+      <a class="hide-sm" href="https://github.com/Skitty4fingers/AirTrack">GitHub</a>
+      <a class="cta" href="flash.html">Install</a>
+    </nav>
   </div>
+</header>
 
-  <footer>Personal, non-commercial use &middot; not for navigation or collision avoidance</footer>
-</main>
+<div class="hero">
+  <svg class="rings" viewBox="0 0 720 720" aria-hidden="true">
+    <circle cx="360" cy="360" r="120"/><circle cx="360" cy="360" r="200"/>
+    <circle cx="360" cy="360" r="280"/><circle cx="360" cy="360" r="358"/>
+  </svg>
+  <div class="wrap">
+    <div>
+      <span class="chip"><span class="dot"></span>Firmware <span id="ver">1.6.3</span> &middot; free and open source</span>
+      <h1>The nearest aircraft overhead, on your desk.</h1>
+      <p class="sub">AirTrack turns a small ESP32-C6 display into a live view of the closest aircraft to you &mdash; callsign, type, distance, bearing, altitude and route &mdash; with a full dashboard on your own network.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="flash.html"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>Install from your browser</a>
+        <a class="btn btn-ghost" href="https://github.com/Skitty4fingers/AirTrack"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48l-.01-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85l-.01 2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>View the source</a>
+      </div>
+      <p class="fine">Needs a Waveshare ESP32-C6-LCD-1.47 and a desktop Chrome, Edge, or Opera. No receiver, no soldering, no toolchain.</p>
+    </div>
+    <div class="shot">
+      <img src="ui/lcd-states.png" alt="Four AirTrack display states: a tracked flight with route and ETA, no recent reports, Wi-Fi lost, and first-time setup" width="1416" height="656" loading="lazy">
+    </div>
+  </div>
+</div>
+
+<section id="what">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>What it does</h2>
+      <p>Positions come from the <a href="https://adsb.fi">adsb.fi</a> community feed over your own Wi-Fi, so there is no radio, antenna, or subscription involved.</p>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg></div>
+        <h3>Closest aircraft, live</h3>
+        <p>Callsign, type and registration, distance and bearing on a compass, altitude, climb rate, speed, and the origin and destination airports when they are known.</p>
+      </div>
+      <div class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 2H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H8v2h8v-2h-2v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H3V4h18z"/></svg></div>
+        <h3>Dashboard on your network</h3>
+        <p>Open the address on the LCD to set your position and radius, brightness, refresh rate, the night schedule, and SD logging. Nothing is exposed to the internet.</p>
+      </div>
+      <div class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg></div>
+        <h3>Updates itself</h3>
+        <p>The dashboard checks for new firmware, installs it into a spare slot with a SHA-256 check, and keeps every setting. A failed image rolls back on its own.</p>
+      </div>
+      <div class="feature">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M18 2h-8L4 8v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-6 6H10V4h2zm3 0h-2V4h2zm3 0h-2V4h2z"/></svg></div>
+        <h3>Keeps a log, dims at night</h3>
+        <p>Optional NDJSON sighting log on a microSD card with a size cap and automatic cleanup, plus a night window that dims the panel and turns the LED off.</p>
+      </div>
+    </div>
+
+    <div class="gallery">
+      <figure>
+        <div class="frame"><img src="ui/dashboard.png" alt="The AirTrack dashboard showing the nearest aircraft, settings cards, and the updates card" width="1400" height="2520" loading="lazy"></div>
+        <figcaption>The dashboard, served by the device on your LAN. Network name, address and coordinates shown here are stand-ins.</figcaption>
+      </figure>
+      <figure>
+        <div class="frame"><img src="ui/setup-portal.png" alt="The AirTrack setup portal listing nearby Wi-Fi networks" width="560" height="1500" loading="lazy"></div>
+        <figcaption>First-run setup, from the device's own hotspot.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="faq" id="faq">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Frequently asked questions</h2>
+      <p>Everything below describes firmware 1.6.3, the release this page installs.</p>
+    </div>
+
+    <div class="faq-group">
+      <h3>Getting started</h3>
+
+      <details open>
+        <summary>What hardware do I need?</summary>
+        <div class="body">
+          <p>A <b>Waveshare ESP32-C6-LCD-1.47</b> with 8 MB of flash, and a USB-C <i>data</i> cable. That is the whole shopping list &mdash; the board has the display, the Wi-Fi radio, and a status LED built in.</p>
+          <p>A microSD card is optional and only needed if you want the sighting log. Format it FAT32; AirTrack never formats a card itself. Wi-Fi must be a 2.4 GHz network, since the ESP32-C6 does not join 5 GHz.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Does it receive ADS-B signals itself?</summary>
+        <div class="body">
+          <p>No. There is no radio receiver or antenna involved, and it will not pick up anything on its own. AirTrack asks the <a href="https://adsb.fi">adsb.fi</a> community feed over your internet connection for aircraft near the coordinates you configure, then shows the closest one.</p>
+          <p>That means it needs working internet, and the data is as good as whatever volunteer receivers can see in your area. Aircraft that do not broadcast a position, or that no nearby receiver hears, will not appear.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How do I install the firmware?</summary>
+        <div class="body">
+          <p>Open the <a href="flash.html">installer page</a> in desktop <b>Chrome, Edge, or Opera</b>, plug the board in, press Install, and pick the serial port that appears. It writes the bootloader, partition table and firmware in about a minute.</p>
+          <p>Firefox and Safari cannot do this &mdash; they do not implement Web Serial &mdash; and neither can phones or tablets. If you would rather use a command line, the repository has the esptool instructions and the full build.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The installer never lists my device. Now what?</summary>
+        <div class="body">
+          <p>Nine times out of ten it is the cable: many USB-C cables are charge-only and carry no data lines, so nothing shows up in the port list. Try a known-good data cable first.</p>
+          <p>Otherwise, close anything else holding the port (Arduino IDE, a serial monitor, a second copy of the installer page), and if it still will not connect, hold the <b>BOOT</b> button while plugging the cable in, release it, and press Install again.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How does it get on my Wi-Fi?</summary>
+        <div class="body">
+          <p>On first boot the device starts its own hotspot, <code>AirTrack-xxxx</code>, and shows the name, an eight-character password, and a QR code on the LCD. Join it from a phone or laptop and the setup page opens by itself; pick your network from the scan list and enter its password.</p>
+          <p>To change networks later, hold <b>BOOT</b> for five seconds and the same setup hotspot comes back. Wi-Fi credentials can only be changed there, never from the normal dashboard, and they are never returned by the API or written to the log.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Do I have to set my location?</summary>
+        <div class="body">
+          <p>No, and setup will not block on it. If you leave it blank the device tracks around Seattle&ndash;Tacoma International as a stand-in and the dashboard reminds you to set the real position.</p>
+          <p>When you are ready, open the dashboard's <b>Location</b> card and type the coordinates, paste something like <code>47.35, -121.98</code> or a maps link, or press <b>Use my location</b>. The radius is yours to choose too, from 1 to 250 NM.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Why does "Use my location" send me to another page?</summary>
+        <div class="body">
+          <p>Browsers only hand out your position to pages served over HTTPS, and the dashboard is plain HTTP on your own network, so the button cannot ask directly. It hands you to a small helper page on this site, which is HTTPS, reads the position once, and sends you straight back to the dashboard with the coordinates filled in.</p>
+          <p>The helper stores nothing and forwards nothing; it only accepts a home-network address to return to. Typing the numbers in by hand does exactly the same job if you would rather not use it.</p>
+        </div>
+      </details>
+    </div>
+
+    <div class="faq-group">
+      <h3>Using it</h3>
+
+      <details>
+        <summary>Can I watch one specific flight?</summary>
+        <div class="body">
+          <p>Yes. Put a callsign, registration, or ICAO hex into <b>Track a single flight</b> and the display follows only that aircraft: it shows <code>WAITING FOR</code> until the flight is in range, then its route, distance to go, and an ETA estimated from ground speed.</p>
+          <p>Scheduled departure and arrival times are not shown, because no free data source provides them; the ETA is arithmetic on the aircraft's current speed, not an airline schedule.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What ends up on the SD card?</summary>
+        <div class="body">
+          <p>With logging on, every distinct aircraft that enters your radius is written to a daily NDJSON file under <code>/airtrack/logs</code>, at most once per window &mdash; 30 minutes by default, up to once a day &mdash; along with its route when known.</p>
+          <p>You choose a size cap in MiB and a number of days to keep; the oldest files are pruned first when the cap is reached. The dashboard's Storage card lists the files, shows the newest records inline, downloads them, and can clear the whole log.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I make it dim at night?</summary>
+        <div class="body">
+          <p>Yes. Set a night window (23:00 to 07:00 by default) and a separate night brightness, and optionally have the status LED switch off during it. You will need to pick your timezone so the device knows when local night is.</p>
+          <p>The panel is capped at 50 percent brightness in hardware regardless, which is a deliberate choice for a display that runs continuously.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How often does it poll, and is that rude to adsb.fi?</summary>
+        <div class="body">
+          <p>The refresh interval is configurable and defaults to five seconds. adsb.fi's public limit is one request per second, and AirTrack cannot be configured to exceed it; it also holds a single TLS connection open across polls instead of renegotiating every time.</p>
+          <p>Please keep it to personal, non-commercial use, which is what the feed is offered for.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What happens when the internet or Wi-Fi drops?</summary>
+        <div class="body">
+          <p>The display keeps working and tells you what is wrong: the feed goes stale and then offline, and the status LED turns orange. Nothing needs restarting.</p>
+          <p>If the saved Wi-Fi disappears for more than a minute, the device opens a recovery hotspot while quietly retrying in the background, and returns to tracking by itself once the network is back.</p>
+        </div>
+      </details>
+    </div>
+
+    <div class="faq-group">
+      <h3>Updates, privacy, and limits</h3>
+
+      <details>
+        <summary>How do updates work?</summary>
+        <div class="body">
+          <p>Open the dashboard's <b>Updates</b> card and press <b>Check for updates</b>. It reads a release manifest published from this site over HTTPS and shows the installed version against the latest one, with the release notes. Pressing Install streams the new firmware into the spare flash slot, checks its size and SHA-256, and restarts into it.</p>
+          <p>Your settings, Wi-Fi, and logs all survive an update. Do not use the browser installer for this &mdash; that one is for blank boards and offers to erase everything.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What if an update goes wrong?</summary>
+        <div class="body">
+          <p>The previous firmware stays in the other slot. A new image has to come up cleanly &mdash; settings loaded, display up, network and dashboard running, memory healthy &mdash; before it marks itself valid; if it cannot, the bootloader falls back to the version you were running.</p>
+          <p>In the worst case you can always reinstall from the <a href="flash.html">browser installer</a> over USB.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What does the device send, and to whom?</summary>
+        <div class="body">
+          <p>It asks adsb.fi for traffic near the coordinates you set, which necessarily tells that service roughly where you are looking, and it asks adsbdb.com about callsigns to fill in routes. It fetches the update manifest from this site when you press Check for updates. That is the entire list.</p>
+          <p>There are no accounts, no telemetry, and nothing is uploaded from the log. Everything else &mdash; settings, sightings, the dashboard &mdash; stays on the device and your own network, and the firmware is open source if you would like to check.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I trust this for anything serious?</summary>
+        <div class="body">
+          <p>No, and please do not. AirTrack is an enthusiast display. The data is community-sourced, incomplete, and a few seconds old at best, and it is explicitly <b>not for navigation or collision avoidance</b>.</p>
+          <p>It is a nice way to know what just flew over your house. That is the whole ambition.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>How do I wipe it or start over?</summary>
+        <div class="body">
+          <p><b>Factory reset</b> in the dashboard's System card erases the sighting log, Wi-Fi credentials, location, and every option, generates a fresh hotspot password, and restarts into setup mode &mdash; the state a new device arrives in. It asks you to type <code>RESET</code> first.</p>
+          <p>Reinstalling from the browser installer with the erase option does the same thing at the flash level.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I build it myself, or change it?</summary>
+        <div class="body">
+          <p>Yes. It builds with ESP-IDF 5.5.5 and the repository includes the host-side UI renderer, the tracker tests, and the release gate. The <a href="https://github.com/Skitty4fingers/AirTrack">README</a> has the build and flash commands, and <code>docs/FIRMWARE_PLAN.md</code> covers the architecture.</p>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap">
+    <div class="sec-head" style="margin:0 auto">
+      <h2>Ready to try it?</h2>
+      <p>Plug the board in and let the browser do the rest.</p>
+    </div>
+    <a class="btn btn-primary" href="flash.html"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>Install AirTrack <span id="ver2"></span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>
+      <a href="https://github.com/Skitty4fingers/AirTrack">Source</a> &middot;
+      <a href="https://github.com/Skitty4fingers/AirTrack/releases">Releases</a> &middot;
+      <a href="flash.html">Install</a> &middot;
+      <a href="#faq">FAQ</a>
+    </span>
+    <span class="disclaimer">Aircraft data from <a href="https://adsb.fi">adsb.fi</a>. Personal, non-commercial use. Not for navigation or collision avoidance.</span>
+  </div>
+</footer>
+
 <script>
 fetch('firmware/manifest.json', { cache: 'no-store' })
   .then(function (r) { return r.json(); })
-  .then(function (m) { if (m.version) document.getElementById('ver').textContent = m.version; })
+  .then(function (m) {
+    if (!m.version) return;
+    var v = document.getElementById('ver');
+    if (v) v.textContent = m.version;
+    var v2 = document.getElementById('ver2');
+    if (v2) v2.textContent = m.version;
+  })
   .catch(function () {});
 </script>
 </body>

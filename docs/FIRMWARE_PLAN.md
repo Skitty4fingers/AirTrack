@@ -16,8 +16,9 @@ mDNS and the dashboard, synchronized time, and remained stable across repeated
 status requests. Final production sign-off still requires a real configured
 location for on-target adsb.fi/TLS validation and the planned long-duration
 soak; coordinates are deliberately never guessed by the firmware or build
-process. Signed OTA/rollback and advanced log retention/downloads remain
-deferred.
+process. Dashboard-initiated OTA with bootloader rollback shipped in 1.6.0 and
+log retention/downloads in 1.3.0-1.5.0; image signing and the long-duration
+soak remain deferred.
 
 Visual references: [revised device states](ui/device-states-concept-v2.png) and [web configurator](ui/web-configurator-concept.png).
 
@@ -408,7 +409,7 @@ coredump  data coredump 0x7C0000 0x040000
 
 Each app slot is 3,904 KiB. The initial release target is no more than 3.25 MiB, and CI fails above 3.5 MiB, preserving at least 320 KiB for IDF, certificate, and feature growth. Web files, fonts, icons, and certificate choices are part of this budget. The public Waveshare page may still describe a C6FH4/4 MB variant, so release images are explicitly hardware-specific and the flash ID is verified before first installation.
 
-OTA later streams a size-bounded, signed image directly into the inactive slot and enables bootloader rollback. Mark a candidate image valid only after local NVS, display-driver, Wi-Fi-driver, web-server, and heap self-tests pass; do not require adsb.fi or SD availability to accept otherwise healthy firmware. If both slots fail, native USB BOOT+RESET remains the recovery path.
+Since 1.6.0 OTA streams a size-bounded image directly into the inactive slot and bootloader rollback is enabled. The image is authenticated by the manifest's SHA-256 over HTTPS rather than by a signature (see `OTA_PLAN.md`). A candidate image is marked valid only after local NVS, display-driver, Wi-Fi-driver, web-server, and heap self-tests pass; adsb.fi or SD availability is not required to accept otherwise healthy firmware. If both slots fail, native USB BOOT+RESET remains the recovery path, and `flash.html` performs it from a browser.
 
 RAM rules:
 
@@ -511,12 +512,14 @@ Keep a reset-loop counter in RTC-retained memory. Three watchdog/panic resets be
 - Deferred: retention pruning, log downloads, full fault-injection matrix, and
   long-duration soak sign-off.
 
-### Phase 7: update and release hardening — release gate complete; OTA deferred
+### Phase 7: update and release hardening — release gate and OTA complete
 
 - Implemented: release artifact build/hashes, size gate, host tests, transport
   and filesystem policy checks, versioned settings migration, security review,
-  and initial target heap/stack telemetry.
-- Deferred: signed OTA upload/download, boot rollback, and 72-hour soak.
+  initial target heap/stack telemetry, and (1.6.0) dashboard-initiated OTA with
+  manifest SHA-256 verification, dual slots, and bootloader rollback, published
+  by `tools/publish_release.sh` with a browser installer for blank boards.
+- Deferred: image signing and the 72-hour soak.
 
 ## 17. Deferred features
 

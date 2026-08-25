@@ -13,7 +13,8 @@ or collision-warning device.
 A finished build installs straight from
 <https://skitty4fingers.github.io/AirTrack/flash.html> over USB, with no
 toolchain; after that the device updates itself from its own dashboard. See
-[Install](#install).
+[Install](#install), or the project site at
+<https://skitty4fingers.github.io/AirTrack/> for an overview and a FAQ.
 
 ## Screens
 
@@ -38,13 +39,10 @@ coordinates are stand-ins):
   <img src="docs/ui/dashboard-mobile.png" alt="AirTrack dashboard, phone" width="20%" align="top">
 </p>
 
-**Setup portal** (captive page on the `AirTrack-xxxx` hotspot) and the
-**HTTPS locate helper** (served from this repo's GitHub Pages) that hands your
-browser's location back to the dashboard:
+**Setup portal**, the captive page on the `AirTrack-xxxx` hotspot:
 
 <p>
-  <img src="docs/ui/setup-portal.png" alt="Setup portal" width="34%" align="top">
-  <img src="docs/ui/locate-helper.png" alt="Locate helper" width="34%" align="top">
+  <img src="docs/ui/setup-portal.png" alt="Setup portal" width="34%">
 </p>
 
 **Browser installer** (GitHub Pages), which writes the firmware to a blank
@@ -102,7 +100,7 @@ development, and the fallback when no Web Serial browser is available.
 
 ## Firmware status
 
-The connected unit is running AirTrack 1.6.3.
+The current release is AirTrack 1.6.3.
 
 Changes in 1.6.x:
 
@@ -253,9 +251,9 @@ The implemented core includes:
 - host parser/tracker tests plus a repeatable security, filesystem, build,
   image-size, and artifact-hash release gate.
 
-On the connected unit the setup SSID is `AirTrack-8134`. Its eight-character
-password is shown only on the LCD and encoded in the QR. It is not returned by
-the LAN API or written to logs.
+Each unit's setup hotspot is named `AirTrack-xxxx` after the last two bytes of
+its MAC address. The eight-character password is shown only on the LCD and
+encoded in the QR code; it is never returned by the LAN API or written to logs.
 
 If Wi-Fi is already configured but the tracking location is not, open the
 numeric address shown at the bottom of the LCD and enter the actual fixed

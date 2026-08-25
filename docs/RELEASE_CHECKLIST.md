@@ -1,4 +1,4 @@
-# AirTrack 1.5.0 release checklist
+# AirTrack 1.6.3 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
@@ -10,10 +10,20 @@ the physical device, its real fixed location, or elapsed soak time.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,770,640 bytes (both 3,904 KiB OTA
-  slots retain 56 percent free).
+- [x] Image is below the 3.5 MiB gate: 1,801,840 bytes (both 3,904 KiB OTA
+  slots retain 55 percent free).
 - [x] Artifact SHA-256:
-  `88c220a7ef79462f259265d15c097799ebb12d9d80cbbefb44ff51b1996fad75`.
+  `52db9d532b45213e8e5194ca83117b015b7bed8d6363830290479f82015bb05c`.
+- [x] Browser-install factory image SHA-256 (bootloader + partition table +
+  otadata + app merged at offset 0, byte-identical to the four release
+  binaries):
+  `b915f3213499a9241e1a05f36959a36e75ff123dc684bc539394be9095903de6`.
+- [x] 1.6.3 on-target: a dashboard update check fetched the manifest over
+  HTTPS and reported up to date with the release date, check age, and
+  multi-line notes rendered in the Updates card.
+- [x] 1.6.x on-target: a 1.6.0 unit updated itself to 1.6.1 from the dashboard
+  (progress to 100 percent, restart into the other slot, running image marked
+  valid), and a second unit was installed from the merged factory image.
 - [x] 1.5.0 on-target: sighting-window select saved (30 -> 1440 -> 30),
   `POST /api/v1/logs/clear` removed the day file (bad token refused), and
   `POST /api/v1/factory-reset` without the typed word was refused with the
@@ -84,7 +94,8 @@ the physical device, its real fixed location, or elapsed soak time.
 ## Deliberately deferred from 1.0.0
 
 - Signed OTA images (deliberately left out; HTTPS + manifest SHA-256 instead).
-  Dual slots are used by the dashboard updater since 1.6.0; 1.5.0 updates use native USB.
+  The dashboard updater has used both OTA slots since 1.6.0; a blank board is
+  installed from `docs/flash.html` or over native USB.
 - Authenticated general-purpose settings mutation on the normal LAN. The LAN
   dashboard is read-only after the one-time initial location save; later
   changes use the physically requested isolated setup portal.
