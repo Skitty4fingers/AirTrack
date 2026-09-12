@@ -191,7 +191,37 @@ esp_err_t board_rgb_init(void);
 esp_err_t board_rgb_set(uint8_t red, uint8_t green, uint8_t blue);
 esp_err_t board_rgb_clear(void);
 
+/*
+ * Battery reading.  The type exists on every board so callers can declare one
+ * unconditionally; only board_battery_read() is board-specific.
+ */
+typedef struct {
+    /* The sense rail produced a plausible reading. */
+    bool valid;
+    /* Raw expander ADC counts, retained so the scaling can be re-checked. */
+    uint16_t adc_counts;
+    float volts;
+    /* Charge estimate from a single-cell Li-ion curve, 0..100. */
+    uint8_t percent;
+    /*
+     * True while a USB host is attached.  With USB connected the charger
+     * holds the sense rail near 4.15 V whether or not a cell is fitted, so
+     * the percentage is only meaningful on battery power; callers should say
+     * "USB" rather than quote a charge level in that state.
+     */
+    bool usb_present;
+} board_battery_t;
+
+/**
+ * Read and scale the battery sense rail.
+ *
+ * Waveshare document the expander ADC as BAT_ADC but publish no divider
+ * ratio, so the scaling below was established by measurement on hardware and
+ * the raw counts stay exposed for re-checking.
+ */
 #if BOARD_HAS_BATTERY_SENSE
+esp_err_t board_battery_read(board_battery_t *out);
+
 /**
  * Read the raw battery sense channel and the expander's input register.
  *

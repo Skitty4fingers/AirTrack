@@ -339,12 +339,9 @@ static status_web_snapshot_t make_status_web_snapshot(
     float humidity_percent = 0.0f;
     const bool environment_valid =
         board_sensors_read_environment(&temperature_c, &humidity_percent) == ESP_OK;
-    uint16_t battery_adc_counts = 0;
-    uint8_t expander_inputs = 0;
-    bool battery_raw_valid = false;
+    board_battery_t battery = {0};
 #if BOARD_HAS_BATTERY_SENSE
-    battery_raw_valid =
-        board_battery_raw(&battery_adc_counts, &expander_inputs) == ESP_OK;
+    (void)board_battery_read(&battery);
 #endif
     return (status_web_snapshot_t) {
         .ssid = status->ssid,
@@ -364,9 +361,11 @@ static status_web_snapshot_t make_status_web_snapshot(
         .time_synchronized = time(NULL) >= VALID_TIME_EPOCH,
         .night = night_now(settings),
         .local_minutes = local_minutes_of_day(),
-        .battery_raw_valid = battery_raw_valid,
-        .battery_adc_counts = battery_adc_counts,
-        .expander_inputs = expander_inputs,
+        .battery_valid = battery.valid,
+        .battery_percent = battery.percent,
+        .battery_volts = battery.volts,
+        .battery_adc_counts = battery.adc_counts,
+        .usb_present = battery.usb_present,
         .environment_valid = environment_valid,
         .temperature_c = temperature_c,
         .humidity_percent = humidity_percent,
@@ -899,6 +898,10 @@ static setup_reason_t run_tracking_mode(void)
             (snapshot_changed || interval_elapsed(last_ui_update,
                                                   UI_TRACKING_INTERVAL_MS))) {
             last_ui_update = xTaskGetTickCount();
+            board_battery_t ui_battery = {0};
+#if BOARD_HAS_BATTERY_SENSE
+            (void)board_battery_read(&ui_battery);
+#endif
             float ui_temperature_c = 0.0f;
             float ui_humidity_percent = 0.0f;
             const bool ui_environment_valid =
@@ -910,6 +913,9 @@ static setup_reason_t run_tracking_mode(void)
                 .environment_valid = ui_environment_valid,
                 .temperature_c = ui_temperature_c,
                 .humidity_percent = ui_humidity_percent,
+                .battery_valid = ui_battery.valid,
+                .usb_present = ui_battery.usb_present,
+                .battery_percent = ui_battery.percent,
                 .ssid = status.ssid[0] != '\0' ? status.ssid : s_config.wifi_ssid,
                 .ip_address = status.connected ? status.ip_address : "--",
                 .rssi_available = status.rssi_available,

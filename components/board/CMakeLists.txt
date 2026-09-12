@@ -18,6 +18,10 @@ if(CONFIG_AIRTRACK_BOARD_TOUCH_LCD_2_8)
     # Panel reset and backlight live behind the CH32V003 expander.
     list(APPEND board_srcs "board_exio.c")
     list(APPEND board_requires esp_driver_i2c)
+    # usb_serial_jtag_is_connected() tells the battery code whether a USB
+    # host is attached, which is what distinguishes charging from running
+    # down the cell.
+    list(APPEND board_priv_requires esp_driver_usb_serial_jtag)
 else()
     # Direct LEDC backlight pin and a WS2812 status LED.
     list(APPEND board_priv_requires esp_driver_ledc espressif__led_strip)

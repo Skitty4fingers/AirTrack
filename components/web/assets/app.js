@@ -60,6 +60,12 @@
       t('humidity', Math.round(j.humidity_percent) + '%');
       t('env', temp(j.temperature_c, j.temperature_unit) + ' · ' + Math.round(j.humidity_percent) + '% RH');
     }
+    /* Power chip. On USB the charger holds the rail near full, so the level
+       is only meaningful once running on the cell. */
+    if (typeof j.battery_volts === 'number') {
+      t('power', j.usb_present ? 'USB power' : j.battery_percent + '% · ' + j.battery_volts.toFixed(2) + ' V');
+      t('power2', (j.usb_present ? 'USB' : 'Battery') + ' · ' + j.battery_volts.toFixed(2) + ' V');
+    }
     t('uptime', up(j.uptime_s));
     t('heap', (j.free_heap_bytes / 1024).toFixed(0) + ' KiB free · min ' + (j.minimum_free_heap_bytes / 1024).toFixed(0) + ' KiB');
     t('polls', j.polls_ok + ' ok · ' + j.polls_failed + ' failed · ' + j.tls_connections + ' TLS sessions');

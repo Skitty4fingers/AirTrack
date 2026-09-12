@@ -45,10 +45,13 @@ typedef struct {
     bool environment_valid;
     float temperature_c;
     float humidity_percent;
-    /* Raw battery-sense diagnostics, for calibrating the scaling. */
-    bool battery_raw_valid;
+    /* Battery, where the board senses one.  adc_counts is kept so the
+     * scaling can be re-checked against a measured cell. */
+    bool battery_valid;
+    uint8_t battery_percent;
+    float battery_volts;
     uint16_t battery_adc_counts;
-    uint8_t expander_inputs;
+    bool usb_present;
     const airtrack_settings_t *settings;
     const airtrack_snapshot_t *aircraft;
 } status_web_snapshot_t;

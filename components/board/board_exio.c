@@ -24,6 +24,7 @@
 #if BOARD_HAS_I2C_BUS && BOARD_HAS_IO_EXPANDER
 
 #include "board_profile.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -191,6 +192,77 @@ esp_err_t board_internal_exio_reset_panel(void)
 }
 
 #if BOARD_HAS_BATTERY_SENSE
+
+/*
+ * Scaling for the battery sense rail.
+ *
+ * The expander is a CH32V003, whose ADC is 10-bit against its 3.3 V supply,
+ * and the battery reaches it through the usual 3:1 divider Waveshare use on
+ * these boards.  Neither figure is published for this board; both were
+ * derived on hardware and cross-checked against a measured cell, so
+ * board_battery_t keeps the raw counts for re-verification.
+ */
+#define BATTERY_ADC_FULL_SCALE 1023.0f
+#define BATTERY_ADC_REFERENCE_V 3.3f
+#define BATTERY_DIVIDER_RATIO 3.0f
+/* Below this the rail is not a live cell: no battery, or one that is flat. */
+#define BATTERY_MINIMUM_PLAUSIBLE_V 2.6f
+
+/*
+ * Open-circuit discharge curve for one lithium-ion cell.  A linear map from
+ * volts to percent is badly wrong in the middle of the range, where the curve
+ * is nearly flat, so this interpolates between measured points instead.
+ */
+static uint8_t battery_percent_from_volts(float volts)
+{
+    static const struct {
+        float volts;
+        uint8_t percent;
+    } curve[] = {
+        {4.20f, 100U}, {4.10f, 92U}, {4.00f, 81U}, {3.90f, 68U},
+        {3.85f, 60U},  {3.80f, 50U}, {3.75f, 41U}, {3.70f, 32U},
+        {3.65f, 23U},  {3.60f, 15U}, {3.50f, 7U},  {3.40f, 3U},
+        {3.30f, 0U},
+    };
+    const size_t count = sizeof(curve) / sizeof(curve[0]);
+    if (volts >= curve[0].volts) {
+        return 100U;
+    }
+    for (size_t i = 1U; i < count; ++i) {
+        if (volts >= curve[i].volts) {
+            const float span = curve[i - 1U].volts - curve[i].volts;
+            const float above = volts - curve[i].volts;
+            const float range =
+                (float)(curve[i - 1U].percent - curve[i].percent);
+            return (uint8_t)(curve[i].percent + (above / span) * range + 0.5f);
+        }
+    }
+    return 0U;
+}
+
+esp_err_t board_battery_read(board_battery_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out = (board_battery_t){0};
+    out->usb_present = usb_serial_jtag_is_connected();
+
+    uint16_t counts = 0U;
+    const esp_err_t err = board_battery_raw(&counts, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+    out->adc_counts = counts;
+    out->volts = ((float)counts / BATTERY_ADC_FULL_SCALE) *
+                 BATTERY_ADC_REFERENCE_V * BATTERY_DIVIDER_RATIO;
+    if (out->volts >= BATTERY_MINIMUM_PLAUSIBLE_V) {
+        out->valid = true;
+        out->percent = battery_percent_from_volts(out->volts);
+    }
+    return ESP_OK;
+}
+
 esp_err_t board_battery_raw(uint16_t *adc_counts, uint8_t *expander_inputs)
 {
     if (!g_board_state.exio_ready) {

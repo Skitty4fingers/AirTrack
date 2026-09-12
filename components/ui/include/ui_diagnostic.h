@@ -70,6 +70,11 @@ typedef struct {
     bool environment_valid;
     float temperature_c;
     float humidity_percent;
+    /* Battery, where the board senses one.  On USB the level is withheld,
+     * because the charger holds the rail near full regardless of the cell. */
+    bool battery_valid;
+    bool usb_present;
+    uint8_t battery_percent;
 } ui_tracking_state_t;
 
 /** Show or update the production nearest-aircraft screen. */

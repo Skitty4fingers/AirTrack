@@ -1633,11 +1633,21 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         const double shown = fahrenheit
             ? ((double)state->temperature_c * 9.0 / 5.0) + 32.0
             : (double)state->temperature_c;
+        char power[16] = "";
+        if (state->battery_valid) {
+            (void)snprintf(power, sizeof(power), " " LV_SYMBOL_BULLET " %s",
+                           state->usb_present ? "USB" : "BAT");
+        }
         (void)snprintf(text, sizeof(text),
                        "adsb.fi " LV_SYMBOL_BULLET " %.1f%s "
-                       LV_SYMBOL_BULLET " %.0f%%",
+                       LV_SYMBOL_BULLET " %.0f%%%s",
                        shown, fahrenheit ? "F" : "C",
-                       (double)state->humidity_percent);
+                       (double)state->humidity_percent, power);
+        if (state->battery_valid && !state->usb_present) {
+            const size_t used = strlen(text);
+            (void)snprintf(text + used, sizeof(text) - used, " %u%%",
+                           (unsigned)state->battery_percent);
+        }
         set_label_if_changed(s_ui.trk_footer_data, text);
     }
 

@@ -57,9 +57,11 @@ typedef struct {
     bool environment_valid;
     float temperature_c;
     float humidity_percent;
-    bool battery_raw_valid;
+    bool battery_valid;
+    uint8_t battery_percent;
+    float battery_volts;
     uint16_t battery_adc_counts;
-    uint8_t expander_inputs;
+    bool usb_present;
     airtrack_settings_t settings;
     airtrack_snapshot_t aircraft;
 } status_web_snapshot_storage_t;
@@ -111,6 +113,7 @@ extern const char app_js_end[] asm("_binary_app_js_end");
 #define ICON_NAV "<svg viewBox=\"0 0 24 24\"><path d=\"M21 3 3 10.5v1l7.5 2 2 7.5h1z\"/></svg>"
 #define ICON_MTN "<svg viewBox=\"0 0 24 24\"><path d=\"m14 6-3.8 5 2.9 3.8-1.6 1.2C9.6 13.5 7 10 7 10l-6 8h22z\"/></svg>"
 #define ICON_GAUGE "<svg viewBox=\"0 0 24 24\"><path d=\"M12 4a10 10 0 0 0-8.7 15h17.4A10 10 0 0 0 12 4zm0 2a8 8 0 0 1 8 8 8 8 0 0 1-.9 3.7L13 13.5a1.5 1.5 0 0 0-1.9-1.9L7.7 8.2A7.9 7.9 0 0 1 12 6zM6.4 9.5l3.2 3.2a1.5 1.5 0 0 0 1.4 1.8l5.6 4.5H4.9A8 8 0 0 1 6.4 9.5z\"/></svg>"
+#define ICON_BATT "<svg viewBox=\"0 0 24 24\"><path d=\"M16.7 5H15V3H9v2H7.3A1.3 1.3 0 0 0 6 6.3v13.4A1.3 1.3 0 0 0 7.3 21h9.4a1.3 1.3 0 0 0 1.3-1.3V6.3A1.3 1.3 0 0 0 16.7 5z\"/></svg>"
 #define ICON_THERM "<svg viewBox=\"0 0 24 24\"><path d=\"M15 13.2V5a3 3 0 1 0-6 0v8.2a5 5 0 1 0 6 0zM12 3a2 2 0 0 1 2 2v1h-4V5a2 2 0 0 1 2-2z\"/></svg>"
 #define ICON_SAVE "<svg viewBox=\"0 0 24 24\"><path d=\"M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10z\"/></svg>"
 
@@ -347,9 +350,11 @@ static esp_err_t normalize_snapshot(
     destination->polls_ok = source->polls_ok;
     destination->polls_failed = source->polls_failed;
     destination->tls_connections = source->tls_connections;
-    destination->battery_raw_valid = source->battery_raw_valid;
+    destination->battery_valid = source->battery_valid;
+    destination->battery_percent = source->battery_percent;
+    destination->battery_volts = source->battery_volts;
     destination->battery_adc_counts = source->battery_adc_counts;
-    destination->expander_inputs = source->expander_inputs;
+    destination->usb_present = source->usb_present;
     destination->environment_valid = source->environment_valid;
     destination->temperature_c = source->temperature_c;
     destination->humidity_percent = source->humidity_percent;
@@ -1378,6 +1383,14 @@ static esp_err_t send_system_card(httpd_req_t *request,
         memcpy(sd, "Card mounted &middot; logging off",
                sizeof("Card mounted &middot; logging off"));
     }
+    char power[128] = "";
+    if (snapshot->battery_valid) {
+        (void)snprintf(power, sizeof(power),
+                       "<span>Power</span><b id=power2>%s &middot; %.2f V</b>",
+                       snapshot->usb_present ? "USB"
+                                             : "Battery",
+                       (double)snapshot->battery_volts);
+    }
     /* Only rendered on boards that carry a temperature/humidity sensor. */
     char environment[96] = "";
     if (snapshot->environment_valid) {
@@ -1427,7 +1440,7 @@ static esp_err_t send_system_card(httpd_req_t *request,
             "<span>Feed polls</span><b id=polls>%lu ok &middot; %lu failed &middot; %lu TLS sessions</b>"
             "<span>Heap</span><b id=heap>%lu KiB free &middot; min %lu KiB</b>"
             "<span>SD card</span><b id=sd>%s</b>"
-            "%s"
+            "%s%s"
             "<span>Board</span><b>" BOARD_NAME "</b>"
             "<span>Flash</span><b>%lu MiB</b></div></div>"
             "<form id=rb method=post action=/api/v1/reboot>"
@@ -1441,7 +1454,7 @@ static esp_err_t send_system_card(httpd_req_t *request,
             (unsigned long)snapshot->tls_connections,
             (unsigned long)(snapshot->free_heap_bytes / 1024U),
             (unsigned long)(snapshot->minimum_free_heap_bytes / 1024U),
-            sd, environment,
+            sd, environment, power,
             (unsigned long)(snapshot->flash_bytes / (1024U * 1024U)));
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
@@ -1519,6 +1532,27 @@ static esp_err_t status_page_handler(httpd_req_t *request)
                                         snapshot.settings.temperature_unit),
             temperature_suffix(snapshot.settings.temperature_unit),
             (double)snapshot.humidity_percent);
+        result = send_chunk_or_size(request, chip, length, sizeof(chip));
+    }
+    /*
+     * Power chip.  While USB is attached the charger holds the sense rail
+     * near full regardless of the cell, so the level is only quoted when
+     * actually running on the battery.
+     */
+    if (result == ESP_OK && snapshot.battery_valid) {
+        char chip[288];
+        int length;
+        if (snapshot.usb_present) {
+            length = snprintf(chip, sizeof(chip),
+                              "<span class=st id=powerchip>" ICON_BATT
+                              "<b id=power>USB power</b></span>");
+        } else {
+            length = snprintf(chip, sizeof(chip),
+                              "<span class=st id=powerchip>" ICON_BATT
+                              "<b id=power>%u%% &middot; %.2f V</b></span>",
+                              (unsigned)snapshot.battery_percent,
+                              (double)snapshot.battery_volts);
+        }
         result = send_chunk_or_size(request, chip, length, sizeof(chip));
     }
     if (result == ESP_OK) {
@@ -1636,12 +1670,19 @@ static esp_err_t status_api_handler(httpd_req_t *request)
         }
 
         /* Absent on boards with no temperature/humidity sensor. */
-        char battery_raw[80] = "";
-        if (snapshot.battery_raw_valid) {
-            (void)snprintf(battery_raw, sizeof(battery_raw),
-                           ",\"battery_adc_counts\":%u,\"expander_inputs\":%u",
-                           (unsigned)snapshot.battery_adc_counts,
-                           (unsigned)snapshot.expander_inputs);
+        char battery_raw[144] = "";
+        if (snapshot.battery_valid) {
+            const int written = snprintf(
+                battery_raw, sizeof(battery_raw),
+                ",\"battery_percent\":%u,\"battery_volts\":%.2f"
+                ",\"battery_adc_counts\":%u,\"usb_present\":%s",
+                (unsigned)snapshot.battery_percent,
+                (double)snapshot.battery_volts,
+                (unsigned)snapshot.battery_adc_counts,
+                snapshot.usb_present ? "true" : "false");
+            if (written < 0 || (size_t)written >= sizeof(battery_raw)) {
+                return ESP_ERR_INVALID_SIZE;
+            }
         }
         char environment[80] = "";
         if (snapshot.environment_valid) {
