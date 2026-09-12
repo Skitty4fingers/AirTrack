@@ -1,9 +1,9 @@
 {
-  "version": "1.6.3",
+  "version": "1.7.0",
   "board": "esp32c6-lcd-1.47",
-  "size": 1801840,
-  "sha256": "52db9d532b45213e8e5194ca83117b015b7bed8d6363830290479f82015bb05c",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.3/airtrack-1.6.3.bin",
-  "notes": "Updates get their own dashboard card: installed vs latest version, release date, release notes and a progress bar.\nSystem card keeps just the firmware row.\nStatus API adds released and checked_age_s; manifest notes may span several lines.",
-  "released": "2026-08-17"
+  "size": 1803920,
+  "sha256": "67d9924216ebb44a805c004139546c9686d0e4789689cc113e7ac2acd0bd3a01",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.7.0/airtrack-1.7.0.bin",
+  "notes": "Adds support for a second board, the ESP32-C6-Touch-LCD-2.8. Nothing about this board changes: same pin map, partition table and update path.\nFixes a hardware status value on the bring-up screen wrapping onto a clipped second line instead of being shortened with an ellipsis. Visible on any unit with no SD card inserted.",
+  "released": "2026-09-12"
 }

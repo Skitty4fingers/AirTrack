@@ -15,14 +15,28 @@ published until that section passes.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
-- [x] Image is below the 3.5 MiB gate: 1,801,840 bytes (both 3,904 KiB OTA
-  slots retain 55 percent free).
+- [x] Both images are below the 3.5 MiB gate:
+  - ESP32-C6-LCD-1.47: 1,803,920 bytes (55 percent of each 3,904 KiB slot free)
+  - ESP32-C6-Touch-LCD-2.8: 1,801,312 bytes (71 percent of each 6 MiB slot free)
 - [x] Artifact SHA-256:
-  `52db9d532b45213e8e5194ca83117b015b7bed8d6363830290479f82015bb05c`.
+  - `67d9924216ebb44a805c004139546c9686d0e4789689cc113e7ac2acd0bd3a01`
+    (`airtrack-1.7.0.bin`)
+  - `4cd38769f3d30459eb4d913328516d241e39d94713080fa39d8787a004855f6e`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.7.0.bin`)
 - [x] Browser-install factory image SHA-256 (bootloader + partition table +
   otadata + app merged at offset 0, byte-identical to the four release
   binaries):
-  `b915f3213499a9241e1a05f36959a36e75ff123dc684bc539394be9095903de6`.
+  - `8a555b3b63b20f6933f918143a91ca28f653bf57252ac193e700b145a8476cf1`
+    (`airtrack-1.7.0-factory.bin`)
+  - `09f17e5ff05aaea1938116ebd5f01daa728a0a44a5964713b940fe953c9b1ec8`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.7.0-factory.bin`)
+- [x] Published release assets verified against their manifests after upload:
+  size and SHA-256 of both boards re-downloaded from the GitHub Release and
+  compared to the committed manifest values.
+- [x] 1.7.0 on-target (2.8): I/O expander answered at 0x24, panel came up at
+  240x320 and 40 MHz, PCF85063A seeded the clock before Wi-Fi, SHTC3 read
+  through to the dashboard, station joined, mDNS answered, and the feed
+  reached `live`. Host tracker tests pass with `-Wall -Wextra -Werror`.
 - [x] 1.6.3 on-target: a dashboard update check fetched the manifest over
   HTTPS and reported up to date with the release date, check age, and
   multi-line notes rendered in the Updates card.

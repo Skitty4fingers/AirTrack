@@ -1,0 +1,9 @@
+{
+  "version": "1.7.0",
+  "board": "esp32c6-touch-lcd-2.8",
+  "size": 1801312,
+  "sha256": "4cd38769f3d30459eb4d913328516d241e39d94713080fa39d8787a004855f6e",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.7.0/airtrack-esp32c6-touch-lcd-2.8-1.7.0.bin",
+  "notes": "First release for the ESP32-C6-Touch-LCD-2.8.\nPanel reset and backlight run through the board's CH32 I2C expander rather than GPIO.\nThe on-board RTC seeds the clock at boot, so a restart out of Internet reach is not stuck waiting for SNTP.\nTemperature and humidity from the SHTC3 appear on the dashboard.\nThe touch panel is not used.",
+  "released": "2026-09-12"
+}
