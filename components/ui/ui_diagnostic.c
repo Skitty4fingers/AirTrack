@@ -44,6 +44,31 @@
  * footer text 10 px.  Both evaluate to the original 148 and 152 at the design
  * width.
  */
+#if BOARD_HAS_BATTERY_SENSE
+/*
+ * Battery gauge, drawn top right the way a phone does it: an outlined body
+ * with a nub, filled in proportion, and the figure beside it.  Sized to sit
+ * inside the 24-pixel header bar.
+ */
+#define UI_BATT_BODY_W 22
+#define UI_BATT_BODY_H 12
+#define UI_BATT_BODY_X ((int32_t)BOARD_LCD_H_RES - 30)
+#define UI_BATT_BODY_Y 6
+#define UI_BATT_NUB_W 3
+#define UI_BATT_NUB_H 6
+/* Inside the 1-pixel border, with a pixel of air on each side. */
+#define UI_BATT_FILL_X (UI_BATT_BODY_X + 2)
+#define UI_BATT_FILL_Y (UI_BATT_BODY_Y + 2)
+#define UI_BATT_FILL_MAX (UI_BATT_BODY_W - 4)
+#define UI_BATT_FILL_H (UI_BATT_BODY_H - 4)
+/* Figure sits to the left of the body, right-aligned against it. */
+#define UI_BATT_TEXT_W 44
+#define UI_BATT_TEXT_X (UI_BATT_BODY_X - UI_BATT_TEXT_W - 4)
+/* The updated-age value moves left to clear the gauge. */
+#define UI_HDR_RIGHT_W 40
+#define UI_HDR_RIGHT_X (UI_BATT_TEXT_X - UI_HDR_RIGHT_W - 4)
+#endif
+
 #define UI_CONTENT_X 12
 #define UI_CONTENT_WIDTH ((int32_t)BOARD_LCD_H_RES - (2 * UI_CONTENT_X))
 #define UI_FOOTER_X 10
@@ -86,6 +111,12 @@ typedef struct {
     lv_obj_t *hdr_wifi;
     lv_obj_t *hdr_dot;
     lv_obj_t *hdr_right;
+#if BOARD_HAS_BATTERY_SENSE
+    lv_obj_t *hdr_batt_body;
+    lv_obj_t *hdr_batt_nub;
+    lv_obj_t *hdr_batt_fill;
+    lv_obj_t *hdr_batt_text;
+#endif
     lv_obj_t *trk_data;          /* container shown while a target exists */
     lv_obj_t *trk_identity;
     lv_obj_t *trk_meta;
@@ -489,10 +520,50 @@ static void create_header(lv_obj_t *screen, uint32_t accent, const char *right)
                                         &lv_font_montserrat_14,
                                         UI_COLOR_TEXT);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+#if BOARD_HAS_BATTERY_SENSE
+    s_ui.hdr_right = create_font_label(bar, right != NULL ? right : "",
+                                       UI_HDR_RIGHT_X, 6, UI_HDR_RIGHT_W,
+                                       &lv_font_montserrat_12,
+                                       UI_COLOR_GREEN);
+#else
     s_ui.hdr_right = create_font_label(bar, right != NULL ? right : "", 128,
                                        6, 38, &lv_font_montserrat_12,
                                        UI_COLOR_GREEN);
+#endif
     lv_obj_set_style_text_align(s_ui.hdr_right, LV_TEXT_ALIGN_RIGHT, 0);
+
+#if BOARD_HAS_BATTERY_SENSE
+    /* Hidden until a reading arrives, so a board with no cell shows nothing. */
+    s_ui.hdr_batt_body = create_group(bar, UI_BATT_BODY_X, UI_BATT_BODY_Y,
+                                      UI_BATT_BODY_W, UI_BATT_BODY_H);
+    lv_obj_set_style_radius(s_ui.hdr_batt_body, 3, 0);
+    lv_obj_set_style_border_width(s_ui.hdr_batt_body, 1, 0);
+    lv_obj_set_style_border_color(s_ui.hdr_batt_body,
+                                  lv_color_hex(UI_COLOR_DIM), 0);
+    lv_obj_set_style_border_opa(s_ui.hdr_batt_body, LV_OPA_COVER, 0);
+
+    s_ui.hdr_batt_nub = create_panel(
+        bar, UI_BATT_BODY_X + UI_BATT_BODY_W, UI_BATT_BODY_Y +
+        ((UI_BATT_BODY_H - UI_BATT_NUB_H) / 2), UI_BATT_NUB_W, UI_BATT_NUB_H,
+        UI_COLOR_DIM);
+    lv_obj_set_style_radius(s_ui.hdr_batt_nub, 1, 0);
+
+    s_ui.hdr_batt_fill = create_panel(bar, UI_BATT_FILL_X, UI_BATT_FILL_Y,
+                                      UI_BATT_FILL_MAX, UI_BATT_FILL_H,
+                                      UI_COLOR_GREEN);
+    lv_obj_set_style_radius(s_ui.hdr_batt_fill, 1, 0);
+
+    s_ui.hdr_batt_text = create_font_label(bar, "", UI_BATT_TEXT_X, 6,
+                                           UI_BATT_TEXT_W,
+                                           &lv_font_montserrat_12,
+                                           UI_COLOR_DIM);
+    lv_obj_set_style_text_align(s_ui.hdr_batt_text, LV_TEXT_ALIGN_RIGHT, 0);
+
+    lv_obj_add_flag(s_ui.hdr_batt_body, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_ui.hdr_batt_nub, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_ui.hdr_batt_fill, LV_OBJ_FLAG_HIDDEN);
+#endif
+
     create_hline(screen, 0, 24, BOARD_LCD_H_RES, 0x1C2A3D);
 }
 
@@ -1098,6 +1169,58 @@ static void create_compass(lv_obj_t *parent)
     lv_obj_set_style_text_line_space(s_ui.trk_to, -1, 0);
 }
 
+#if BOARD_HAS_BATTERY_SENSE
+/* Defined below, with the other tracking-screen update helpers. */
+static void set_label_if_changed(lv_obj_t *label, const char *text);
+
+/*
+ * Redraw the gauge.  While USB is attached the charger holds the sense rail
+ * near full whatever the cell is doing, so the bar is shown full with a
+ * charging bolt rather than a percentage that would describe the charger.
+ */
+static void update_battery_gauge(bool valid, bool usb_present, uint8_t percent)
+{
+    if (s_ui.hdr_batt_body == NULL) {
+        return;
+    }
+    if (!valid) {
+        lv_obj_add_flag(s_ui.hdr_batt_body, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.hdr_batt_nub, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ui.hdr_batt_fill, LV_OBJ_FLAG_HIDDEN);
+        set_label_if_changed(s_ui.hdr_batt_text, "");
+        return;
+    }
+    lv_obj_remove_flag(s_ui.hdr_batt_body, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_ui.hdr_batt_nub, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_ui.hdr_batt_fill, LV_OBJ_FLAG_HIDDEN);
+
+    uint32_t colour;
+    int32_t width;
+    char text[8];
+    if (usb_present) {
+        colour = UI_COLOR_CYAN;
+        width = UI_BATT_FILL_MAX;
+        (void)snprintf(text, sizeof(text), "%s", LV_SYMBOL_CHARGE);
+    } else {
+        colour = percent > 50U ? UI_COLOR_GREEN
+               : percent > 20U ? UI_COLOR_AMBER
+                               : UI_COLOR_RED;
+        width = ((int32_t)percent * UI_BATT_FILL_MAX + 50) / 100;
+        /* Keep a sliver visible so an almost-flat cell still reads as a bar. */
+        if (width < 1 && percent > 0U) {
+            width = 1;
+        }
+        (void)snprintf(text, sizeof(text), "%u%%", (unsigned)percent);
+    }
+    lv_obj_set_width(s_ui.hdr_batt_fill, width);
+    lv_obj_set_style_bg_color(s_ui.hdr_batt_fill, lv_color_hex(colour), 0);
+    lv_obj_set_style_border_color(s_ui.hdr_batt_body, lv_color_hex(colour), 0);
+    lv_obj_set_style_bg_color(s_ui.hdr_batt_nub, lv_color_hex(colour), 0);
+    set_label_if_changed(s_ui.hdr_batt_text, text);
+    lv_obj_set_style_text_color(s_ui.hdr_batt_text, lv_color_hex(colour), 0);
+}
+#endif
+
 /* "SEA" -> "S\nE\nA" for the vertical route columns. */
 static void vertical_code(char *out, size_t capacity, const char *code)
 {
@@ -1378,6 +1501,10 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
     } else {
         (void)snprintf(text, sizeof(text), "%.0fh", since_success / 3600.0);
     }
+#if BOARD_HAS_BATTERY_SENSE
+    update_battery_gauge(state->battery_valid, state->usb_present,
+                         state->battery_percent);
+#endif
     set_label_if_changed(s_ui.hdr_right, text);
     lv_obj_set_style_text_color(s_ui.hdr_right,
         lv_color_hex(since_success >= 0.0 && since_success <= UI_STALE_AGE_S
@@ -1633,21 +1760,12 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         const double shown = fahrenheit
             ? ((double)state->temperature_c * 9.0 / 5.0) + 32.0
             : (double)state->temperature_c;
-        char power[16] = "";
-        if (state->battery_valid) {
-            (void)snprintf(power, sizeof(power), " " LV_SYMBOL_BULLET " %s",
-                           state->usb_present ? "USB" : "BAT");
-        }
+        /* Battery lives in the header gauge, not here. */
         (void)snprintf(text, sizeof(text),
                        "adsb.fi " LV_SYMBOL_BULLET " %.1f%s "
-                       LV_SYMBOL_BULLET " %.0f%%%s",
+                       LV_SYMBOL_BULLET " %.0f%%",
                        shown, fahrenheit ? "F" : "C",
-                       (double)state->humidity_percent, power);
-        if (state->battery_valid && !state->usb_present) {
-            const size_t used = strlen(text);
-            (void)snprintf(text + used, sizeof(text) - used, " %u%%",
-                           (unsigned)state->battery_percent);
-        }
+                       (double)state->humidity_percent);
         set_label_if_changed(s_ui.trk_footer_data, text);
     }
 
