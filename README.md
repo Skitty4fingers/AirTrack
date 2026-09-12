@@ -114,7 +114,24 @@ development, and the fallback when no Web Serial browser is available.
 
 ## Firmware status
 
-The current release is AirTrack 1.7.0.
+The current release is AirTrack 1.7.0. Version 1.8.0 is built and running
+on hardware but has not been published, so no device is offered it yet.
+
+Unreleased (1.8.0), ESP32-C6-Touch-LCD-2.8 only unless noted:
+
+- Temperature units are selectable (Display card), independently of the
+  distance units. Settings schema 5; schema 4 records migrate to Celsius.
+- The on-board temperature and humidity move out of the System card into
+  the dashboard status bar and onto the LCD footer.
+- Battery level and power source, from the expander's sense ADC: a
+  phone-style gauge top right of the LCD header, a status-bar chip, and
+  `battery_percent`, `battery_volts` and `usb_present` in `/api/v1/status`.
+  While USB is attached the level is withheld, because the charger holds the
+  sense rail near full whatever the cell is doing.
+- Both boards: a hardware status value too wide for its row on the bring-up
+  screen no longer wraps onto a clipped second line.
+- Both boards: a lost SHTC3 sample no longer blanks the climate reading; the
+  last good value is held for up to a minute.
 
 Changes in 1.7.0:
 

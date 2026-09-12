@@ -1,4 +1,4 @@
-# AirTrack 1.7.0 release checklist
+# AirTrack 1.8.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
