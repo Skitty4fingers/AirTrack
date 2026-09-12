@@ -57,6 +57,9 @@ typedef struct {
     bool environment_valid;
     float temperature_c;
     float humidity_percent;
+    bool battery_raw_valid;
+    uint16_t battery_adc_counts;
+    uint8_t expander_inputs;
     airtrack_settings_t settings;
     airtrack_snapshot_t aircraft;
 } status_web_snapshot_storage_t;
@@ -108,6 +111,7 @@ extern const char app_js_end[] asm("_binary_app_js_end");
 #define ICON_NAV "<svg viewBox=\"0 0 24 24\"><path d=\"M21 3 3 10.5v1l7.5 2 2 7.5h1z\"/></svg>"
 #define ICON_MTN "<svg viewBox=\"0 0 24 24\"><path d=\"m14 6-3.8 5 2.9 3.8-1.6 1.2C9.6 13.5 7 10 7 10l-6 8h22z\"/></svg>"
 #define ICON_GAUGE "<svg viewBox=\"0 0 24 24\"><path d=\"M12 4a10 10 0 0 0-8.7 15h17.4A10 10 0 0 0 12 4zm0 2a8 8 0 0 1 8 8 8 8 0 0 1-.9 3.7L13 13.5a1.5 1.5 0 0 0-1.9-1.9L7.7 8.2A7.9 7.9 0 0 1 12 6zM6.4 9.5l3.2 3.2a1.5 1.5 0 0 0 1.4 1.8l5.6 4.5H4.9A8 8 0 0 1 6.4 9.5z\"/></svg>"
+#define ICON_THERM "<svg viewBox=\"0 0 24 24\"><path d=\"M15 13.2V5a3 3 0 1 0-6 0v8.2a5 5 0 1 0 6 0zM12 3a2 2 0 0 1 2 2v1h-4V5a2 2 0 0 1 2-2z\"/></svg>"
 #define ICON_SAVE "<svg viewBox=\"0 0 24 24\"><path d=\"M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10z\"/></svg>"
 
 static const char PAGE_HEAD[] =
@@ -131,8 +135,10 @@ static const char PAGE_AFTER_SSID[] =
 static const char PAGE_AFTER_API[] =
     "</b></span><span class=st>" ICON_CLOCK "Updated <b id=upd>";
 
+static const char PAGE_AFTER_UPDATED[] = "</b></span>";
+
 static const char PAGE_MAIN_START[] =
-    "</b></span></header><main>";
+    "</header><main>";
 
 static const char PAGE_FORM_START[] =
     "<form id=cfg method=post action=/api/v1/config autocomplete=off>"
@@ -341,6 +347,9 @@ static esp_err_t normalize_snapshot(
     destination->polls_ok = source->polls_ok;
     destination->polls_failed = source->polls_failed;
     destination->tls_connections = source->tls_connections;
+    destination->battery_raw_valid = source->battery_raw_valid;
+    destination->battery_adc_counts = source->battery_adc_counts;
+    destination->expander_inputs = source->expander_inputs;
     destination->environment_valid = source->environment_valid;
     destination->temperature_c = source->temperature_c;
     destination->humidity_percent = source->humidity_percent;
@@ -591,6 +600,18 @@ static float display_distance(float nautical_miles,
         return nautical_miles * 1.150779f;
     }
     return nautical_miles;
+}
+
+static float display_temperature(float celsius,
+                                 airtrack_temperature_unit_t unit)
+{
+    return unit == AIRTRACK_TEMPERATURE_F ? (celsius * 9.0f / 5.0f) + 32.0f
+                                          : celsius;
+}
+
+static const char *temperature_suffix(airtrack_temperature_unit_t unit)
+{
+    return unit == AIRTRACK_TEMPERATURE_F ? "&deg;F" : "&deg;C";
 }
 
 static const char *distance_suffix(airtrack_distance_unit_t unit)
@@ -1011,6 +1032,18 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
                              settings->distance_unit == AIRTRACK_DISTANCE_MI);
     }
     if (result == ESP_OK) {
+        result = send_html_chunk(
+            request, "</select><h3>Temperature units</h3><select name=tunits>");
+    }
+    if (result == ESP_OK) {
+        result = send_option(request, "c", "Celsius",
+                             settings->temperature_unit == AIRTRACK_TEMPERATURE_C);
+    }
+    if (result == ESP_OK) {
+        result = send_option(request, "f", "Fahrenheit",
+                             settings->temperature_unit == AIRTRACK_TEMPERATURE_F);
+    }
+    if (result == ESP_OK) {
         char from[8];
         char to[8];
         (void)snprintf(from, sizeof(from), "%02u:%02u",
@@ -1350,8 +1383,11 @@ static esp_err_t send_system_card(httpd_req_t *request,
     if (snapshot->environment_valid) {
         (void)snprintf(environment, sizeof(environment),
                        "<span>On-board climate</span>"
-                       "<b id=env>%.1f &deg;C &middot; %.0f%% RH</b>",
-                       (double)snapshot->temperature_c,
+                       "<b id=env>%.1f%s &middot; %.0f%% RH</b>",
+                       (double)display_temperature(
+                           snapshot->temperature_c,
+                           snapshot->settings.temperature_unit),
+                       temperature_suffix(snapshot->settings.temperature_unit),
                        (double)snapshot->humidity_percent);
     }
     ota_status_t ota;
@@ -1464,6 +1500,26 @@ static esp_err_t status_page_handler(httpd_req_t *request)
             memcpy(age, "never", sizeof("never"));
         }
         result = send_html_chunk(request, age);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_AFTER_UPDATED);
+    }
+    /*
+     * Climate chip.  Only rendered on a board that has the sensor, so the bar
+     * keeps its original shape everywhere else.  app.js keeps it current.
+     */
+    if (result == ESP_OK && snapshot.environment_valid) {
+        /* Large enough for the inline icon plus both formatted values. */
+        char chip[288];
+        const int length = snprintf(
+            chip, sizeof(chip),
+            "<span class=st id=climatechip>" ICON_THERM
+            "<b id=climate>%.1f%s</b>&nbsp;<b id=humidity>%.0f%%</b></span>",
+            (double)display_temperature(snapshot.temperature_c,
+                                        snapshot.settings.temperature_unit),
+            temperature_suffix(snapshot.settings.temperature_unit),
+            (double)snapshot.humidity_percent);
+        result = send_chunk_or_size(request, chip, length, sizeof(chip));
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, PAGE_MAIN_START);
@@ -1580,13 +1636,23 @@ static esp_err_t status_api_handler(httpd_req_t *request)
         }
 
         /* Absent on boards with no temperature/humidity sensor. */
+        char battery_raw[80] = "";
+        if (snapshot.battery_raw_valid) {
+            (void)snprintf(battery_raw, sizeof(battery_raw),
+                           ",\"battery_adc_counts\":%u,\"expander_inputs\":%u",
+                           (unsigned)snapshot.battery_adc_counts,
+                           (unsigned)snapshot.expander_inputs);
+        }
         char environment[80] = "";
         if (snapshot.environment_valid) {
             const int written = snprintf(
                 environment, sizeof(environment),
-                ",\"temperature_c\":%.1f,\"humidity_percent\":%.1f",
+                ",\"temperature_c\":%.1f,\"humidity_percent\":%.1f"
+                ",\"temperature_unit\":\"%s\"",
                 (double)snapshot.temperature_c,
-                (double)snapshot.humidity_percent);
+                (double)snapshot.humidity_percent,
+                snapshot.settings.temperature_unit == AIRTRACK_TEMPERATURE_F
+                    ? "f" : "c");
             if (written < 0 || (size_t)written >= sizeof(environment)) {
                 return ESP_ERR_INVALID_SIZE;
             }
@@ -1604,7 +1670,7 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             "\"polls_ok\":%lu,\"polls_failed\":%lu,\"tls_connections\":%lu,"
             "\"sd_logging\":%s,\"sd_records\":%lu,\"sd_log_bytes\":%llu,"
             "\"sd_log_files\":%lu,\"sd_files_pruned\":%lu,"
-            "\"night\":%s,\"local_minutes\":%d%s}",
+            "\"night\":%s,\"local_minutes\":%d%s%s}",
             rssi,
             snapshot.sd_mounted ? "true" : "false",
             (unsigned long)snapshot.flash_bytes,
@@ -1625,7 +1691,7 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             (unsigned long)snapshot.sd_log_files,
             (unsigned long)snapshot.sd_files_pruned,
             snapshot.night ? "true" : "false", snapshot.local_minutes,
-            environment);
+            environment, battery_raw);
         if (length < 0 || (size_t)length >= sizeof(tail)) {
             return ESP_ERR_INVALID_SIZE;
         }
@@ -1651,6 +1717,7 @@ static esp_err_t config_api_handler(httpd_req_t *request)
         "\"latitude\":%.7f,\"longitude\":%.7f,\"radius_nm\":%u,"
         "\"poll_interval_s\":%u,\"max_position_age_s\":%u,"
         "\"include_ground\":%s,\"distance_unit\":\"%s\","
+        "\"temperature_unit\":\"%s\","
         "\"brightness_percent\":%u,\"logging_mode\":%u,\"retention_mib\":%u,"
         "\"sighting_window_min\":%u,"
         "\"retention_days\":%u,\"focus\":\"%s\",\"night_enabled\":%s,"
@@ -1666,6 +1733,7 @@ static esp_err_t config_api_handler(httpd_req_t *request)
         (unsigned)settings->max_position_age_s,
         settings->include_ground ? "true" : "false",
         distance_suffix(settings->distance_unit),
+        settings->temperature_unit == AIRTRACK_TEMPERATURE_F ? "f" : "c",
         (unsigned)settings->brightness_percent,
         (unsigned)settings->logging_mode,
         (unsigned)settings->retention_mib,
@@ -1801,6 +1869,7 @@ typedef struct {
     bool have_poll;
     bool have_brightness;
     bool have_units;
+    bool have_tunits;
     bool have_focus;
     bool have_retention;
     bool have_log_window;
@@ -1820,6 +1889,7 @@ typedef struct {
     char poll[8];
     char brightness[8];
     char units[4];
+    char tunits[4];
     char focus[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
     char retention[8];
     char log_window[8];
@@ -1875,6 +1945,7 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("poll", form->poll, have_poll)
         FIELD("brightness", form->brightness, have_brightness)
         FIELD("units", form->units, have_units)
+        FIELD("tunits", form->tunits, have_tunits)
         FIELD("focus", form->focus, have_focus)
         FIELD("retention", form->retention, have_retention)
         FIELD("log_window", form->log_window, have_log_window)
@@ -1958,6 +2029,15 @@ static esp_err_t apply_settings_form(const settings_form_t *form,
             settings->distance_unit = AIRTRACK_DISTANCE_KM;
         } else if (strcmp(form->units, "mi") == 0) {
             settings->distance_unit = AIRTRACK_DISTANCE_MI;
+        } else {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+    if (form->have_tunits) {
+        if (strcmp(form->tunits, "c") == 0) {
+            settings->temperature_unit = AIRTRACK_TEMPERATURE_C;
+        } else if (strcmp(form->tunits, "f") == 0) {
+            settings->temperature_unit = AIRTRACK_TEMPERATURE_F;
         } else {
             return ESP_ERR_INVALID_ARG;
         }

@@ -27,6 +27,11 @@ typedef enum {
 } airtrack_distance_unit_t;
 
 typedef enum {
+    AIRTRACK_TEMPERATURE_C = 0,
+    AIRTRACK_TEMPERATURE_F,
+} airtrack_temperature_unit_t;
+
+typedef enum {
     AIRTRACK_LOGGING_OFF = 0,
     AIRTRACK_LOGGING_TARGET_CHANGES,
     AIRTRACK_LOGGING_PERIODIC,
@@ -42,6 +47,8 @@ typedef struct {
     uint16_t max_position_age_s;
     bool include_ground;
     airtrack_distance_unit_t distance_unit;
+    /* Independent of distance_unit: miles with Celsius is a valid choice. */
+    airtrack_temperature_unit_t temperature_unit;
     uint8_t brightness_percent;
     airtrack_logging_mode_t logging_mode;
     uint16_t log_heartbeat_s;

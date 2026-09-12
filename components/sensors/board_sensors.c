@@ -50,6 +50,13 @@
 
 /* The dashboard polls every two seconds; the air does not change that fast. */
 #define ENVIRONMENT_CACHE_MS 10000
+/*
+ * How long a sample stays usable when a later read fails.  The SHTC3
+ * occasionally NACKs a measurement, and blanking the reading over one lost
+ * sample makes the dashboard flicker; holding the previous value for a while
+ * is both steadier and more honest than reporting nothing.
+ */
+#define ENVIRONMENT_STALE_MS 60000
 
 static const char *TAG = "sensors";
 
@@ -449,10 +456,10 @@ esp_err_t board_sensors_read_environment(float *temperature_c,
 
     esp_err_t err = ESP_OK;
     const int64_t now = monotonic_ms();
-    const bool cache_usable =
+    const bool cache_fresh =
         s_sensors.environment_valid &&
         (now - s_sensors.environment_sampled_ms) < ENVIRONMENT_CACHE_MS;
-    if (!cache_usable) {
+    if (!cache_fresh) {
         float temperature = 0.0f;
         float humidity = 0.0f;
         err = shtc3_sample_locked(&temperature, &humidity);
@@ -461,6 +468,13 @@ esp_err_t board_sensors_read_environment(float *temperature_c,
             s_sensors.humidity_percent = humidity;
             s_sensors.environment_valid = true;
             s_sensors.environment_sampled_ms = now;
+        } else if (s_sensors.environment_valid &&
+                   (now - s_sensors.environment_sampled_ms) <
+                       ENVIRONMENT_STALE_MS) {
+            /* Keep serving the last good sample rather than nothing. */
+            err = ESP_OK;
+        } else {
+            s_sensors.environment_valid = false;
         }
     }
 

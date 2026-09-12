@@ -51,8 +51,15 @@
     }
     t('counts', j.accepted + ' shown of ' + j.reported + ' reports within ' + j.radius_nm + ' NM');
   }
+  function temp(c, u) { return (u === 'f' ? c * 9 / 5 + 32 : c).toFixed(1) + (u === 'f' ? '°F' : '°C'); }
   function st(j) {
     t('ssid', j.ssid); t('rssi', j.rssi_dbm === null ? 'unavailable' : j.rssi_dbm + ' dBm');
+    /* Climate chip and System row; absent on boards with no sensor. */
+    if (typeof j.temperature_c === 'number') {
+      t('climate', temp(j.temperature_c, j.temperature_unit));
+      t('humidity', Math.round(j.humidity_percent) + '%');
+      t('env', temp(j.temperature_c, j.temperature_unit) + ' · ' + Math.round(j.humidity_percent) + '% RH');
+    }
     t('uptime', up(j.uptime_s));
     t('heap', (j.free_heap_bytes / 1024).toFixed(0) + ' KiB free · min ' + (j.minimum_free_heap_bytes / 1024).toFixed(0) + ' KiB');
     t('polls', j.polls_ok + ' ok · ' + j.polls_failed + ' failed · ' + j.tls_connections + ' TLS sessions');

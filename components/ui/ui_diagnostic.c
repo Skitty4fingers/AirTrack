@@ -1626,6 +1626,21 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
     lv_obj_set_style_text_color(s_ui.trk_footer_net,
         lv_color_hex(state->wifi_connected ? UI_COLOR_DIM : UI_COLOR_RED), 0);
 
+    /* Attribution line, carrying the on-board climate where there is one. */
+    if (state->environment_valid) {
+        const bool fahrenheit =
+            state->settings->temperature_unit == AIRTRACK_TEMPERATURE_F;
+        const double shown = fahrenheit
+            ? ((double)state->temperature_c * 9.0 / 5.0) + 32.0
+            : (double)state->temperature_c;
+        (void)snprintf(text, sizeof(text),
+                       "adsb.fi " LV_SYMBOL_BULLET " %.1f%s "
+                       LV_SYMBOL_BULLET " %.0f%%",
+                       shown, fahrenheit ? "F" : "C",
+                       (double)state->humidity_percent);
+        set_label_if_changed(s_ui.trk_footer_data, text);
+    }
+
     lvgl_port_unlock();
     (void)lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
     return ESP_OK;

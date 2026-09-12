@@ -45,6 +45,10 @@ typedef struct {
     bool environment_valid;
     float temperature_c;
     float humidity_percent;
+    /* Raw battery-sense diagnostics, for calibrating the scaling. */
+    bool battery_raw_valid;
+    uint16_t battery_adc_counts;
+    uint8_t expander_inputs;
     const airtrack_settings_t *settings;
     const airtrack_snapshot_t *aircraft;
 } status_web_snapshot_t;

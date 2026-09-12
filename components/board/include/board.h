@@ -41,6 +41,7 @@ extern "C" {
 #define BOARD_HAS_IO_EXPANDER 0
 #define BOARD_HAS_RTC 0
 #define BOARD_HAS_ENVIRONMENT_SENSOR 0
+#define BOARD_HAS_BATTERY_SENSE 0
 /* One 172 x 20 RGB565 strip is 6,880 bytes. */
 #define BOARD_SPI_MAX_TRANSFER_BYTES (8U * 1024U)
 
@@ -60,6 +61,8 @@ extern "C" {
 #define BOARD_HAS_IO_EXPANDER 1
 #define BOARD_HAS_RTC 1
 #define BOARD_HAS_ENVIRONMENT_SENSOR 1
+/* Battery voltage reaches the expander's ADC as BAT_ADC. */
+#define BOARD_HAS_BATTERY_SENSE 1
 /* One 240 x 20 RGB565 strip is 9,600 bytes and needs the larger budget. */
 #define BOARD_SPI_MAX_TRANSFER_BYTES (16U * 1024U)
 
@@ -187,6 +190,20 @@ bool board_boot_button_is_pressed(void);
 esp_err_t board_rgb_init(void);
 esp_err_t board_rgb_set(uint8_t red, uint8_t green, uint8_t blue);
 esp_err_t board_rgb_clear(void);
+
+#if BOARD_HAS_BATTERY_SENSE
+/**
+ * Read the raw battery sense channel and the expander's input register.
+ *
+ * Waveshare document the expander's ADC as BAT_ADC but publish neither the
+ * divider ratio nor a charge-status signal, so both are established by
+ * measurement on real hardware.  This accessor exposes the unscaled values so
+ * that calibration is possible; higher layers should use the cooked reading.
+ *
+ * Either pointer may be NULL.
+ */
+esp_err_t board_battery_raw(uint16_t *adc_counts, uint8_t *expander_inputs);
+#endif
 
 #if BOARD_HAS_I2C_BUS
 /**

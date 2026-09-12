@@ -22,13 +22,15 @@
 #define SETTINGS_MAGIC 0x4b525441UL /* "ATRK" in little-endian storage. */
 /* Schema 1 records are 80 bytes; schema 2 (96) appends the focus flight;
  * schema 3 (136) appends the night schedule and timezone; schema 4 (138)
- * appends the sighting-log window.  Older records
- * decode with defaults for the missing fields; unknown schemas are rejected. */
-#define SETTINGS_SCHEMA 4U
-#define SETTINGS_WIRE_BYTES 138U
+ * appends the sighting-log window; schema 5 (139) appends the temperature
+ * unit.  Older records decode with defaults for the missing fields; unknown
+ * schemas are rejected. */
+#define SETTINGS_SCHEMA 5U
+#define SETTINGS_WIRE_BYTES 139U
 #define SETTINGS_V1_WIRE_BYTES 80U
 #define SETTINGS_V2_WIRE_BYTES 96U
 #define SETTINGS_V3_WIRE_BYTES 136U
+#define SETTINGS_V4_WIRE_BYTES 138U
 
 enum {
     WIRE_MAGIC = 0,
@@ -61,6 +63,7 @@ enum {
     WIRE_TZ_LENGTH = 87,
     WIRE_TZ = 88,             /* up to 47 bytes */
     WIRE_SIGHTING_WINDOW = 136, /* schema 4 */
+    WIRE_TEMPERATURE_UNIT = 138, /* schema 5 */
 };
 
 static const char AP_PASSWORD_ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -122,6 +125,7 @@ void airtrack_settings_defaults(airtrack_settings_t *out)
         .poll_interval_s = 5U,
         .max_position_age_s = 15U,
         .distance_unit = AIRTRACK_DISTANCE_NM,
+        .temperature_unit = AIRTRACK_TEMPERATURE_C,
         .brightness_percent = 40U,
         .logging_mode = AIRTRACK_LOGGING_OFF,
         .log_heartbeat_s = 60U,
@@ -211,6 +215,7 @@ esp_err_t airtrack_settings_validate(const airtrack_settings_t *settings)
         settings->max_position_age_s < 5U ||
         settings->max_position_age_s > 120U ||
         settings->distance_unit > AIRTRACK_DISTANCE_MI ||
+        settings->temperature_unit > AIRTRACK_TEMPERATURE_F ||
         settings->brightness_percent > 50U ||
         settings->logging_mode > AIRTRACK_LOGGING_PERIODIC ||
         settings->log_heartbeat_s < 30U ||
@@ -265,6 +270,7 @@ static void encode_settings(const airtrack_settings_t *settings,
     wire[WIRE_TZ_LENGTH] = (uint8_t)tz_length;
     memcpy(wire + WIRE_TZ, settings->timezone, tz_length);
     put_u16(wire + WIRE_SIGHTING_WINDOW, settings->sighting_window_min);
+    wire[WIRE_TEMPERATURE_UNIT] = (uint8_t)settings->temperature_unit;
     put_u32(wire + WIRE_CRC, 0U);
     put_u32(wire + WIRE_CRC,
             esp_crc32_le(UINT32_MAX, wire, SETTINGS_WIRE_BYTES));
@@ -282,7 +288,8 @@ static bool decode_settings(const uint8_t *wire, size_t length,
     if (!((schema == 1U && length == SETTINGS_V1_WIRE_BYTES) ||
           (schema == 2U && length == SETTINGS_V2_WIRE_BYTES) ||
           (schema == 3U && length == SETTINGS_V3_WIRE_BYTES) ||
-          (schema == 4U && length == SETTINGS_WIRE_BYTES)) ||
+          (schema == 4U && length == SETTINGS_V4_WIRE_BYTES) ||
+          (schema == 5U && length == SETTINGS_WIRE_BYTES)) ||
         get_u16(wire + WIRE_LENGTH) != length) {
         return false;
     }
@@ -345,6 +352,9 @@ static bool decode_settings(const uint8_t *wire, size_t length,
     }
     decoded.sighting_window_min =
         schema >= 4U ? get_u16(wire + WIRE_SIGHTING_WINDOW) : 30U;
+    decoded.temperature_unit =
+        schema >= 5U ? (airtrack_temperature_unit_t)wire[WIRE_TEMPERATURE_UNIT]
+                     : AIRTRACK_TEMPERATURE_C;
     if ((wire[WIRE_LOCATION_CONFIGURED] > 1U) ||
         (wire[WIRE_INCLUDE_GROUND] > 1U) ||
         airtrack_settings_validate(&decoded) != ESP_OK) {

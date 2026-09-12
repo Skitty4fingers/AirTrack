@@ -62,6 +62,14 @@ typedef struct {
     bool rssi_available;
     int8_t rssi_dbm;
     bool wifi_connected;
+    /*
+     * Optional on-board climate, shown in the footer.  Boards without the
+     * sensor leave environment_valid false and the footer keeps its original
+     * attribution-only line.  The unit follows settings->temperature_unit.
+     */
+    bool environment_valid;
+    float temperature_c;
+    float humidity_percent;
 } ui_tracking_state_t;
 
 /** Show or update the production nearest-aircraft screen. */

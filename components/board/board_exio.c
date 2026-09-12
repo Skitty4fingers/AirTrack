@@ -47,6 +47,15 @@
 
 static const char *TAG = "board_exio";
 
+static esp_err_t exio_read(uint8_t reg, uint8_t *data, size_t length)
+{
+    if (g_board_state.exio_device == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return i2c_master_transmit_receive(g_board_state.exio_device, &reg, 1,
+                                       data, length, EXIO_I2C_TIMEOUT_MS);
+}
+
 static esp_err_t exio_write(uint8_t reg, uint8_t value)
 {
     if (g_board_state.exio_device == NULL) {
@@ -180,6 +189,31 @@ esp_err_t board_internal_exio_reset_panel(void)
     vTaskDelay(pdMS_TO_TICKS(EXIO_LCD_RESET_SETTLE_MS));
     return ESP_OK;
 }
+
+#if BOARD_HAS_BATTERY_SENSE
+esp_err_t board_battery_raw(uint16_t *adc_counts, uint8_t *expander_inputs)
+{
+    if (!g_board_state.exio_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (adc_counts != NULL) {
+        uint8_t raw[2] = {0, 0};
+        const esp_err_t err = exio_read(EXIO_REG_ADC, raw, sizeof(raw));
+        if (err != ESP_OK) {
+            return err;
+        }
+        /* Little-endian, matching the vendor helper. */
+        *adc_counts = (uint16_t)((uint16_t)raw[0] | ((uint16_t)raw[1] << 8));
+    }
+    if (expander_inputs != NULL) {
+        const esp_err_t err = exio_read(EXIO_REG_INPUT, expander_inputs, 1);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return ESP_OK;
+}
+#endif
 
 i2c_master_bus_handle_t board_i2c_bus(void)
 {
