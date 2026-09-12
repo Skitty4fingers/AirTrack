@@ -137,8 +137,10 @@ Updates, which is where a mistake is most expensive:
   anything.
 - [ ] A 1.47 unit still updates from its own untagged and board-tagged
   manifests, unchanged.
-- [ ] A full 2.8 update round trip: download, verify, restart into the other
-  slot, self-test passes, image marked valid.
+- [x] A full 2.8 update round trip: download, verify, restart into the other
+  slot, self-test passes, image marked valid. Done on 1.6.3 -> 1.7.0: the
+  device moved from `ota_0` to `ota_1`, reported `pending_verify` false, and
+  came back up tracking.
 - [ ] The browser installer's board selector installs a blank 2.8 and the
   device comes up in setup mode.
 
@@ -151,6 +153,21 @@ UI at 240 pixels:
 - [ ] Same check on the real panel for the live, empty, stale, offline,
   updating, and both setup screens.
 - [ ] The setup QR scans from a phone at the larger size.
+
+Battery:
+
+- [x] With USB attached the sense rail reads ~4.14 V and `usb_present` is
+  true; the level is withheld in favour of "USB power", because the charger
+  holds the rail near full whether or not a cell is fitted.
+- [x] With USB removed the board stays up on the cell, `usb_present` goes
+  false, and the reading settles to ~4.11 V.
+- [ ] Confirm the scaling against a meter across the cell while on battery.
+  The 10-bit / 3:1 figures are inferred, not measured; `battery_adc_counts`
+  in `/api/v1/status` is exposed for exactly this.
+- [ ] Run the cell down far enough to confirm the percentage tracks the
+  discharge curve rather than only the top of it.
+- [ ] Confirm behaviour on a charger that does not enumerate as a USB host:
+  expected to read as battery power and quote a charger-held level.
 
 Expected differences, to confirm rather than treat as faults:
 

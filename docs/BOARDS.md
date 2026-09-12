@@ -66,7 +66,7 @@ the boards. `components/board/board_exio.c` drives it.
 | `0x03` | Output levels, one bit per channel |
 | `0x04` | Input levels |
 | `0x05` | Backlight PWM duty, 0-255 |
-| `0x06` | ADC, 16-bit little-endian |
+| `0x06` | Battery sense ADC, 16-bit little-endian |
 
 | Channel | Signal |
 |---|---|
@@ -89,6 +89,44 @@ Two consequences follow from the backlight being an I2C register:
 
 The panel reset is pulsed explicitly over I2C before `esp_lcd_panel_reset()`
 issues its soft reset, because esp_lcd owns no reset pin here.
+
+### Battery sense
+
+Waveshare document register `0x06` only as "BAT_ADC voltage detection" and
+publish neither a divider ratio nor a charge-status signal, so both were
+established on hardware.
+
+The expander is a **CH32V003, whose ADC is 10-bit**, not the 12-bit a first
+guess assumes, and the cell arrives through the 3:1 divider Waveshare use
+elsewhere:
+
+```
+volts = counts / 1023 * 3.3 * 3
+```
+
+That reads a measured 428 counts as 4.14 V, exactly where a charger holds a
+lithium cell. `board_battery_t` keeps the raw counts so the scaling stays
+checkable against a meter.
+
+Two findings matter more than the formula:
+
+- **The rail cannot indicate charge state.** With USB attached the charger
+  holds it near 4.15 V whether or not a cell is fitted, so the reading is
+  identical with the battery removed. This looks like a broken ADC and is not.
+  AirTrack therefore withholds the level while on USB rather than quoting a
+  number that describes the charger.
+- **No expander input bit tracks charging.** Across 150+ samples spanning a
+  USB removal, register `0x04` never moved off `0x0B` - and bits 0, 1 and 3
+  are only our own outputs reading back. Charge state comes from
+  `usb_serial_jtag_is_connected()` instead.
+
+That last call reports a USB *host*, not VBUS, so a charger that does not
+enumerate reads as battery power and would quote a level taken from a
+charger-held rail.
+
+Confirmed on hardware by removing USB: `usb_present` went false, the board
+stayed up on the cell, and the reading moved 4.14 V -> 4.11 V, which is where
+a freshly charged cell settles.
 
 ## Building for a board
 
