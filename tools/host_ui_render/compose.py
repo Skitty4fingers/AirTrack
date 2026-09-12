@@ -4,7 +4,8 @@ import struct, sys, zlib
 def readppm(p):
     d=open(p,'rb').read(); parts=d.split(b'\n',3); w,h=map(int,parts[1].split()); return w,h,parts[3]
 out=sys.argv[1]; imgs=[readppm(p) for p in sys.argv[2:]]
-W,H=172,320; S=2; gap=8
+# Panel size comes from the renders, so this works for any supported board.
+W,H=imgs[0][0],imgs[0][1]; S=2; gap=8
 ow=(W*S+gap)*len(imgs)+gap; oh=H*S+2*gap
 rows=[]
 for y in range(oh):

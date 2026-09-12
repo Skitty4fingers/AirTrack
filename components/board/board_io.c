@@ -1,18 +1,11 @@
 #include "board_internal.h"
 
+#include "board_profile.h"
 #include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "esp_log.h"
-#include "led_strip.h"
-#include "led_strip_rmt.h"
 
-#define BOARD_PIN_SD_CS 4
-#define BOARD_PIN_RGB 8
-#define BOARD_PIN_BOOT_BUTTON 9
-#define BOARD_PIN_LCD_CS 14
-#define BOARD_PIN_LCD_DC 15
-#define BOARD_PIN_LCD_RESET 21
-#define BOARD_PIN_BACKLIGHT 22
+#if !BOARD_HAS_IO_EXPANDER
+#include "driver/ledc.h"
 
 #define BOARD_BACKLIGHT_MODE LEDC_LOW_SPEED_MODE
 #define BOARD_BACKLIGHT_TIMER LEDC_TIMER_0
@@ -20,17 +13,35 @@
 #define BOARD_BACKLIGHT_RESOLUTION LEDC_TIMER_13_BIT
 #define BOARD_BACKLIGHT_MAX_DUTY ((1U << 13U) - 1U)
 #define BOARD_BACKLIGHT_FREQUENCY_HZ 5000U
+#endif
+
+#if BOARD_HAS_RGB_LED
+#include "led_strip.h"
+#include "led_strip_rmt.h"
+#endif
 
 static const char *TAG = "board_io";
 
 esp_err_t board_internal_prepare_safe_pins(void)
 {
+    /*
+     * Both SPI chip selects must be high before the bus starts.  Pins that do
+     * not exist on this board are -1 in the profile and are simply left out
+     * of the mask; on the 2.8 the panel reset and backlight are expander
+     * channels, blanked by board_internal_i2c_init() instead.
+     */
+    uint64_t output_mask = (1ULL << BOARD_PIN_SD_CS) |
+                           (1ULL << BOARD_PIN_LCD_CS) |
+                           (1ULL << BOARD_PIN_LCD_DC);
+#if BOARD_PIN_LCD_RESET >= 0
+    output_mask |= 1ULL << BOARD_PIN_LCD_RESET;
+#endif
+#if BOARD_PIN_BACKLIGHT >= 0
+    output_mask |= 1ULL << BOARD_PIN_BACKLIGHT;
+#endif
+
     const gpio_config_t output_config = {
-        .pin_bit_mask = (1ULL << BOARD_PIN_SD_CS) |
-                        (1ULL << BOARD_PIN_LCD_CS) |
-                        (1ULL << BOARD_PIN_LCD_DC) |
-                        (1ULL << BOARD_PIN_LCD_RESET) |
-                        (1ULL << BOARD_PIN_BACKLIGHT),
+        .pin_bit_mask = output_mask,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -54,12 +65,70 @@ esp_err_t board_internal_prepare_safe_pins(void)
     if (err != ESP_OK) {
         return err;
     }
+#if BOARD_PIN_LCD_RESET >= 0
     err = gpio_set_level(BOARD_PIN_LCD_RESET, 0); /* active-low reset */
     if (err != ESP_OK) {
         return err;
     }
-    return gpio_set_level(BOARD_PIN_BACKLIGHT, 0);
+#endif
+#if BOARD_PIN_BACKLIGHT >= 0
+    err = gpio_set_level(BOARD_PIN_BACKLIGHT, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+#endif
+    return ESP_OK;
 }
+
+#if BOARD_HAS_IO_EXPANDER
+
+/*
+ * The expander takes an 8-bit duty in its PWM register.  Waveshare's helper
+ * caps the requested percentage at 97 before scaling; AirTrack's own
+ * 50 percent ceiling is well below that, so the clamp below is the only one
+ * that ever applies.
+ */
+esp_err_t board_internal_backlight_init(void)
+{
+    if (!g_board_state.exio_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    g_board_state.backlight_ready = true;
+    g_board_state.brightness_percent = 0;
+    return board_internal_exio_set_pwm(0);
+}
+
+esp_err_t board_internal_backlight_set(uint8_t percent)
+{
+    if (!g_board_state.backlight_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint8_t applied = percent > BOARD_BACKLIGHT_MAX_PERCENT
+                                ? BOARD_BACKLIGHT_MAX_PERCENT
+                                : percent;
+    const uint8_t duty = (uint8_t)(((uint32_t)applied * 255U + 50U) / 100U);
+    const esp_err_t err = board_internal_exio_set_pwm(duty);
+    if (err == ESP_OK) {
+        g_board_state.brightness_percent = applied;
+        if (applied != percent) {
+            ESP_LOGW(TAG, "Backlight request %u%% clamped to %u%%", percent, applied);
+        }
+    }
+    return err;
+}
+
+void board_internal_backlight_deinit(void)
+{
+    if (!g_board_state.backlight_ready) {
+        return;
+    }
+    (void)board_internal_exio_set_pwm(0);
+    g_board_state.backlight_ready = false;
+    g_board_state.brightness_percent = 0;
+}
+
+#else /* direct backlight pin */
 
 esp_err_t board_internal_backlight_init(void)
 {
@@ -118,6 +187,19 @@ esp_err_t board_internal_backlight_set(uint8_t percent)
     return err;
 }
 
+void board_internal_backlight_deinit(void)
+{
+    if (!g_board_state.backlight_ready) {
+        return;
+    }
+    ledc_stop(BOARD_BACKLIGHT_MODE, BOARD_BACKLIGHT_CHANNEL, 0);
+    gpio_set_level(BOARD_PIN_BACKLIGHT, 0);
+    g_board_state.backlight_ready = false;
+    g_board_state.brightness_percent = 0;
+}
+
+#endif /* BOARD_HAS_IO_EXPANDER */
+
 esp_err_t board_backlight_set(uint8_t percent)
 {
     if (!g_board_state.initialized) {
@@ -129,17 +211,6 @@ esp_err_t board_backlight_set(uint8_t percent)
 uint8_t board_backlight_get(void)
 {
     return g_board_state.brightness_percent;
-}
-
-void board_internal_backlight_deinit(void)
-{
-    if (!g_board_state.backlight_ready) {
-        return;
-    }
-    ledc_stop(BOARD_BACKLIGHT_MODE, BOARD_BACKLIGHT_CHANNEL, 0);
-    gpio_set_level(BOARD_PIN_BACKLIGHT, 0);
-    g_board_state.backlight_ready = false;
-    g_board_state.brightness_percent = 0;
 }
 
 esp_err_t board_internal_button_init(void)
@@ -170,6 +241,8 @@ void board_internal_button_deinit(void)
         g_board_state.button_ready = false;
     }
 }
+
+#if BOARD_HAS_RGB_LED
 
 esp_err_t board_internal_rgb_init(void)
 {
@@ -205,16 +278,6 @@ esp_err_t board_internal_rgb_init(void)
     return ESP_OK;
 }
 
-esp_err_t board_rgb_init(void)
-{
-    if (!g_board_state.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    g_board_state.rgb_init_attempted = true;
-    g_board_state.rgb_init_result = board_internal_rgb_init();
-    return g_board_state.rgb_init_result;
-}
-
 esp_err_t board_rgb_set(uint8_t red, uint8_t green, uint8_t blue)
 {
     if (!g_board_state.rgb_ready || g_board_state.rgb_strip == NULL) {
@@ -243,4 +306,40 @@ void board_internal_rgb_deinit(void)
         g_board_state.rgb_strip = NULL;
     }
     g_board_state.rgb_ready = false;
+}
+
+#else /* no status LED on this board */
+
+esp_err_t board_internal_rgb_init(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t board_rgb_set(uint8_t red, uint8_t green, uint8_t blue)
+{
+    (void)red;
+    (void)green;
+    (void)blue;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t board_rgb_clear(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void board_internal_rgb_deinit(void)
+{
+}
+
+#endif /* BOARD_HAS_RGB_LED */
+
+esp_err_t board_rgb_init(void)
+{
+    if (!g_board_state.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    g_board_state.rgb_init_attempted = true;
+    g_board_state.rgb_init_result = board_internal_rgb_init();
+    return g_board_state.rgb_init_result;
 }

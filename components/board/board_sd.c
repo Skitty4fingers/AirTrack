@@ -1,14 +1,10 @@
 #include "board_internal.h"
 
+#include "board_profile.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
-
-#define BOARD_SPI_HOST SPI2_HOST
-#define BOARD_PIN_SD_CS 4
-#define BOARD_SD_CLOCK_KHZ 10000
-#define BOARD_SD_MAX_FILES 6
 
 static const char *TAG = "board_sd";
 
@@ -43,10 +39,11 @@ esp_err_t board_internal_sd_mount(void)
         g_board_state.sd_capacity_bytes =
             (uint64_t)g_board_state.sd_card->csd.capacity *
             g_board_state.sd_card->csd.sector_size;
-        ESP_LOGI(TAG, "Mounted FAT SD at %s (%llu MiB, 10 MHz)",
+        ESP_LOGI(TAG, "Mounted FAT SD at %s (%llu MiB, %d kHz)",
                  BOARD_SD_MOUNT_POINT,
                  (unsigned long long)(g_board_state.sd_capacity_bytes /
-                                      (1024ULL * 1024ULL)));
+                                      (1024ULL * 1024ULL)),
+                 BOARD_SD_CLOCK_KHZ);
     } else {
         g_board_state.sd_card = NULL;
         g_board_state.sd_mounted = false;

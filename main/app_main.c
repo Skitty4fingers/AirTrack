@@ -1,6 +1,7 @@
 #include "airtrack_config.h"
 #include "adsb_client.h"
 #include "board.h"
+#include "board_sensors.h"
 #include "captive_dns.h"
 #include "connectivity.h"
 #include "ota_update.h"
@@ -11,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "esp_err.h"
@@ -36,7 +38,18 @@
 #define RECOVERY_RECONNECT_DELAY_MS 20000U
 #define RECOVERY_STABLE_MS 5000U
 #define VALID_TIME_EPOCH 1704067200L
-#define OTA_MANIFEST_URL "https://skitty4fingers.github.io/AirTrack/firmware/manifest.json"
+/*
+ * Each board has its own manifest so a device can never be offered an image
+ * built for different hardware.  The original 1.47 keeps the historical path,
+ * because units already in the field poll it; every other board gets a path
+ * named after its board identifier.  The firmware also checks the manifest's
+ * own "board" field, so a mis-pointed URL is refused rather than installed.
+ */
+#if defined(CONFIG_AIRTRACK_BOARD_LCD_1_47)
+#define OTA_MANIFEST_URL     "https://skitty4fingers.github.io/AirTrack/firmware/manifest.json"
+#else
+#define OTA_MANIFEST_URL     "https://skitty4fingers.github.io/AirTrack/firmware/manifest-" BOARD_ID ".json"
+#endif
 #define OTA_SELFTEST_DEADLINE_MS (3U * 60U * 1000U)
 #define OTA_SELFTEST_MIN_HEAP (60U * 1024U)
 
@@ -320,6 +333,11 @@ static status_web_snapshot_t make_status_web_snapshot(
     (void)adsb_client_get_stats(&stats);
     storage_logger_status_t logger = {0};
     (void)storage_logger_get_status(&logger);
+    /* Cached inside the sensor component; boards without one report nothing. */
+    float temperature_c = 0.0f;
+    float humidity_percent = 0.0f;
+    const bool environment_valid =
+        board_sensors_read_environment(&temperature_c, &humidity_percent) == ESP_OK;
     return (status_web_snapshot_t) {
         .ssid = status->ssid,
         .ip_address = status->ip_address,
@@ -338,12 +356,63 @@ static status_web_snapshot_t make_status_web_snapshot(
         .time_synchronized = time(NULL) >= VALID_TIME_EPOCH,
         .night = night_now(settings),
         .local_minutes = local_minutes_of_day(),
+        .environment_valid = environment_valid,
+        .temperature_c = temperature_c,
+        .humidity_percent = humidity_percent,
         .polls_ok = stats.polls_ok,
         .polls_failed = stats.polls_failed,
         .tls_connections = stats.connections,
         .settings = settings,
         .aircraft = aircraft,
     };
+}
+
+/*
+ * Seed the system clock from the battery-backed RTC, on boards that have one,
+ * before SNTP has had a chance to answer.
+ *
+ * The tracker refuses to rank positions without a plausible wall clock, so a
+ * device that restarts out of Internet reach would otherwise sit in TIME_SYNC
+ * indefinitely.  The RTC only ever loses to SNTP: once SNTP reports a sync the
+ * chip is rewritten from the authoritative time.
+ */
+static void seed_clock_from_rtc(void)
+{
+    time_t held = 0;
+    const esp_err_t err = board_sensors_rtc_get(&held);
+    if (err != ESP_OK) {
+        if (err != ESP_ERR_NOT_SUPPORTED && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGI(TAG, "Battery-backed clock unusable (%s); waiting for SNTP",
+                     esp_err_to_name(err));
+        }
+        return;
+    }
+    if (held < VALID_TIME_EPOCH) {
+        ESP_LOGW(TAG, "Battery-backed clock is implausibly old; ignoring it");
+        return;
+    }
+
+    const struct timeval seeded = {.tv_sec = held, .tv_usec = 0};
+    if (settimeofday(&seeded, NULL) != 0) {
+        ESP_LOGW(TAG, "Could not apply the battery-backed clock");
+        return;
+    }
+    ESP_LOGI(TAG, "Clock seeded from the on-board RTC; SNTP will refine it");
+}
+
+/* Write an SNTP-confirmed time back to the battery-backed clock. */
+static void store_clock_to_rtc(struct timeval *synchronized)
+{
+    if (synchronized == NULL || synchronized->tv_sec < VALID_TIME_EPOCH) {
+        return;
+    }
+    const esp_err_t err = board_sensors_rtc_set(synchronized->tv_sec);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "On-board RTC updated from SNTP");
+    } else if (err != ESP_ERR_NOT_SUPPORTED && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Could not update the on-board RTC: %s",
+                 esp_err_to_name(err));
+    }
 }
 
 static void start_time_sync(void)
@@ -353,6 +422,7 @@ static void start_time_sync(void)
     }
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
+    sntp_set_time_sync_notification_cb(store_clock_to_rtc);
     esp_sntp_init();
     s_sntp_started = true;
 }
@@ -912,8 +982,11 @@ void app_main(void)
     ESP_ERROR_CHECK(board_init(&board_config));
     ESP_ERROR_CHECK(board_get_status(&s_board_status));
     ESP_ERROR_CHECK(esp_flash_get_size(NULL, &s_flash_bytes));
+    /* Optional and best-effort: a board without these keeps working. */
+    (void)board_sensors_init();
+    seed_clock_from_rtc();
 
-    ESP_LOGI(TAG, "AirTrack hardware bring-up");
+    ESP_LOGI(TAG, "AirTrack hardware bring-up on %s", BOARD_NAME);
     ESP_LOGI(TAG, "Flash: %lu MiB",
              (unsigned long)(s_flash_bytes / (1024U * 1024U)));
     ESP_LOGI(TAG, "LCD: %s", s_board_status.lcd_ready ? "ready" : "failed");

@@ -26,6 +26,29 @@
 #define UI_RADAR_SWEEP_MS 6000U
 #define UI_STALE_AGE_S 30.0
 
+/*
+ * The screens are laid out against a 172-pixel design width, which is the
+ * narrowest supported panel.  Full-width elements (headers, dividers, footer,
+ * centred labels) already derive from BOARD_LCD_H_RES.  The few blocks that
+ * are positioned absolutely - the distance/unit pair, the compass, the radar,
+ * and the route columns flanking it - are shifted by UI_WIDE_PAD so they stay
+ * centred on a wider panel.  The constant is exactly zero at the design
+ * width, so the 172-pixel rendering is unchanged.
+ */
+#define UI_DESIGN_WIDTH 172
+#define UI_WIDE_PAD (((int32_t)BOARD_LCD_H_RES - UI_DESIGN_WIDTH) / 2)
+
+/*
+ * The diagnostic screen is a stack of full-width rows rather than a composed
+ * layout, so it simply grows with the panel: content is inset 12 px a side,
+ * footer text 10 px.  Both evaluate to the original 148 and 152 at the design
+ * width.
+ */
+#define UI_CONTENT_X 12
+#define UI_CONTENT_WIDTH ((int32_t)BOARD_LCD_H_RES - (2 * UI_CONTENT_X))
+#define UI_FOOTER_X 10
+#define UI_FOOTER_WIDTH ((int32_t)BOARD_LCD_H_RES - (2 * UI_FOOTER_X))
+
 #define UI_COLOR_BG 0x07111F
 #define UI_COLOR_PANEL 0x0D1A2B
 #define UI_COLOR_TEXT 0xF2F6FC
@@ -360,17 +383,29 @@ static lv_obj_t *create_label(lv_obj_t *parent, const char *text, int32_t x,
 static void create_status_row(lv_obj_t *screen, const char *name, int32_t y,
                               lv_obj_t **value)
 {
+    /* The name column is fixed; the value takes whatever the panel leaves. */
+    const int32_t row_width = UI_CONTENT_WIDTH;
+    const int32_t value_x = 69;
+    const int32_t value_width = row_width - value_x - 8;
+
     lv_obj_t *line = lv_obj_create(screen);
     lv_obj_remove_style_all(line);
-    lv_obj_set_size(line, 148, 34);
-    lv_obj_set_pos(line, 12, y);
+    lv_obj_set_size(line, row_width, 34);
+    lv_obj_set_pos(line, UI_CONTENT_X, y);
     lv_obj_set_style_bg_color(line, lv_color_hex(0x121E31), 0);
     lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(line, 5, 0);
 
     create_label(line, name, 8, 9, 58, lv_color_hex(0xA7B5CA));
-    *value = create_label(line, "CHECKING", 69, 9, 71,
+    *value = create_label(line, "CHECKING", value_x, 9, value_width,
                           result_color(UI_DIAGNOSTIC_PENDING));
+    /*
+     * Hold the value to one line.  create_label() leaves the height on
+     * content, and LV_LABEL_LONG_DOT only ellipsizes once the text runs out of
+     * height, so an unbounded label wraps a long value such as
+     * "16MB OPTIONAL" onto a second line that the row then clips.
+     */
+    lv_obj_set_height(*value, lv_font_get_line_height(&lv_font_montserrat_14));
     lv_obj_set_style_text_align(*value, LV_TEXT_ALIGN_RIGHT, 0);
 }
 
@@ -556,13 +591,15 @@ static void create_screen(void)
     lv_obj_set_style_bg_color(header, lv_color_hex(0x0D1A2B), 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
     create_label(header, "AIRTRACK", 10, 8, 86, lv_color_hex(0x55D9F3));
-    lv_obj_t *mode = create_label(header, "HW", 97, 8, 65,
+    lv_obj_t *mode = create_label(header, "HW", 97, 8,
+                                  (int32_t)BOARD_LCD_H_RES - 10 - 97,
                                   lv_color_hex(0x8BE36D));
     lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_RIGHT, 0);
 
-    create_label(s_ui.screen, "SYSTEM BRING-UP", 12, 43, 148,
-                 lv_color_hex(0x6F819B));
-    s_ui.phase = create_label(s_ui.screen, "Starting hardware...", 12, 64, 148,
+    create_label(s_ui.screen, "SYSTEM BRING-UP", UI_CONTENT_X, 43,
+                 UI_CONTENT_WIDTH, lv_color_hex(0x6F819B));
+    s_ui.phase = create_label(s_ui.screen, "Starting hardware...",
+                              UI_CONTENT_X, 64, UI_CONTENT_WIDTH,
                               lv_color_hex(0xF2F6FC));
 
     create_status_row(s_ui.screen, "LCD", 94, &s_ui.lcd_value);
@@ -575,12 +612,13 @@ static void create_screen(void)
     lv_obj_set_pos(footer, 0, 226);
     lv_obj_set_style_bg_color(footer, lv_color_hex(0x0D1A2B), 0);
     lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
-    create_label(footer, "NETWORK", 10, 9, 152, lv_color_hex(0x6F819B));
-    s_ui.ssid = create_label(footer, "SSID: --", 10, 31, 152,
-                             lv_color_hex(0xDDE7F4));
-    s_ui.ip = create_label(footer, "IP: --", 10, 51, 152,
+    create_label(footer, "NETWORK", UI_FOOTER_X, 9, UI_FOOTER_WIDTH,
+                 lv_color_hex(0x6F819B));
+    s_ui.ssid = create_label(footer, "SSID: --", UI_FOOTER_X, 31,
+                             UI_FOOTER_WIDTH, lv_color_hex(0xDDE7F4));
+    s_ui.ip = create_label(footer, "IP: --", UI_FOOTER_X, 51, UI_FOOTER_WIDTH,
                            lv_color_hex(0xDDE7F4));
-    create_label(footer, "Data: adsb.fi", 10, 72, 152,
+    create_label(footer, "Data: adsb.fi", UI_FOOTER_X, 72, UI_FOOTER_WIDTH,
                  lv_color_hex(0x55D9F3));
 
     lv_screen_load(s_ui.screen);
@@ -930,7 +968,7 @@ static float unit_scale(airtrack_distance_unit_t unit)
 }
 
 /* Compass geometry (screen coordinates inside the data group). */
-#define UI_COMPASS_CX 86
+#define UI_COMPASS_CX (86 + UI_WIDE_PAD)
 #define UI_COMPASS_CY 140
 #define UI_COMPASS_R 38
 
@@ -1037,20 +1075,25 @@ static void create_compass(lv_obj_t *parent)
 
     /* Route codes flank the gauge, one letter per line. */
     const int32_t top = UI_COMPASS_CY - UI_COMPASS_R;
-    s_ui.trk_from_caption = create_font_label(parent, "", 4, top, 40,
+    s_ui.trk_from_caption = create_font_label(parent, "", 4 + UI_WIDE_PAD,
+                                              top, 40,
                                               &lv_font_montserrat_10,
                                               UI_COLOR_MUTED);
     lv_obj_set_style_text_align(s_ui.trk_from_caption, LV_TEXT_ALIGN_CENTER, 0);
-    s_ui.trk_from = create_font_label(parent, "", 4, top + 12, 40,
-                                      &lv_font_montserrat_14, UI_COLOR_TEXT);
+    s_ui.trk_from = create_font_label(parent, "", 4 + UI_WIDE_PAD, top + 12,
+                                      40, &lv_font_montserrat_14,
+                                      UI_COLOR_TEXT);
     lv_obj_set_style_text_align(s_ui.trk_from, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(s_ui.trk_from, -1, 0);
-    s_ui.trk_to_caption = create_font_label(parent, "", BOARD_LCD_H_RES - 44,
+    s_ui.trk_to_caption = create_font_label(parent, "",
+                                            BOARD_LCD_H_RES - 44 - UI_WIDE_PAD,
                                             top, 40, &lv_font_montserrat_10,
                                             UI_COLOR_MUTED);
     lv_obj_set_style_text_align(s_ui.trk_to_caption, LV_TEXT_ALIGN_CENTER, 0);
-    s_ui.trk_to = create_font_label(parent, "", BOARD_LCD_H_RES - 44, top + 12,
-                                    40, &lv_font_montserrat_14, UI_COLOR_TEXT);
+    s_ui.trk_to = create_font_label(parent, "",
+                                    BOARD_LCD_H_RES - 44 - UI_WIDE_PAD,
+                                    top + 12, 40, &lv_font_montserrat_14,
+                                    UI_COLOR_TEXT);
     lv_obj_set_style_text_align(s_ui.trk_to, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(s_ui.trk_to, -1, 0);
 }
@@ -1170,10 +1213,12 @@ static void create_tracking_screen_locked(void)
                                           UI_COLOR_DIM);
     s_ui.trk_divider = create_hline(s_ui.trk_data, 14, 54,
                                     BOARD_LCD_H_RES - 28, UI_COLOR_CYAN);
-    s_ui.trk_distance = create_font_label(s_ui.trk_data, "--", 0, 55, 120,
+    s_ui.trk_distance = create_font_label(s_ui.trk_data, "--",
+                                          UI_WIDE_PAD, 55, 120,
                                           &lv_font_montserrat_40,
                                           UI_COLOR_CYAN);
-    s_ui.trk_unit = create_font_label(s_ui.trk_data, "NM", 120, 73, 46,
+    s_ui.trk_unit = create_font_label(s_ui.trk_data, "NM",
+                                      120 + UI_WIDE_PAD, 73, 46,
                                       &lv_font_montserrat_20, UI_COLOR_CYAN);
     create_compass(s_ui.trk_data);
     create_data_row(s_ui.trk_data, 0, 183, &ui_icon_nav, NULL);
@@ -1187,14 +1232,16 @@ static void create_tracking_screen_locked(void)
                                                 "NO RECENT\nREPORTS", 12,
                                                 &lv_font_montserrat_20,
                                                 UI_COLOR_CYAN);
-    create_radar(s_ui.trk_empty, 86, 126);
+    create_radar(s_ui.trk_empty, 86 + UI_WIDE_PAD, 126);
     s_ui.trk_empty_within = create_centered_label(s_ui.trk_empty, "within",
                                                   188, &lv_font_montserrat_14,
                                                   UI_COLOR_TEXT);
-    s_ui.trk_empty_radius = create_font_label(s_ui.trk_empty, "25", 0, 206,
+    s_ui.trk_empty_radius = create_font_label(s_ui.trk_empty, "25",
+                                              UI_WIDE_PAD, 206,
                                               110, &lv_font_montserrat_28,
                                               UI_COLOR_CYAN);
-    s_ui.trk_empty_unit = create_font_label(s_ui.trk_empty, "NM", 110, 218,
+    s_ui.trk_empty_unit = create_font_label(s_ui.trk_empty, "NM",
+                                            110 + UI_WIDE_PAD, 218,
                                             50, &lv_font_montserrat_16,
                                             UI_COLOR_CYAN);
     s_ui.trk_empty_hint = create_centered_label(s_ui.trk_empty, "", 246,

@@ -1,7 +1,12 @@
-# AirTrack 1.6.3 release checklist
+# AirTrack 1.7.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
+
+Everything recorded as passed below was measured on the **ESP32-C6-LCD-1.47**.
+The ESP32-C6-Touch-LCD-2.8 port has not yet been run on hardware; its
+acceptance is the separate section near the end, and no 2.8 image should be
+published until that section passes.
 
 ## Passed for the current artifact
 
@@ -61,6 +66,84 @@ the physical device, its real fixed location, or elapsed soak time.
   (`AIRTRACK_TEST_FORCE_RECOVERY_MS`) completed a full tracking -> AP+STA
   recovery -> tracking round trip in about 14 seconds.
 
+## Required before the first ESP32-C6-Touch-LCD-2.8 release
+
+The port is written against Waveshare's published pin map and its Arduino
+board-support sources. None of it has been executed on the board, so treat
+every item here as unverified rather than expected-to-pass. Work down the list
+in order: each step depends on the one above it.
+
+Bring-up:
+
+- [ ] `tools/check_release.sh --board esp32c6-touch-lcd-2.8` completes, and the
+  image fits the gate. Record the image size and SHA-256.
+- [ ] Serial log shows `board_exio: I/O expander ready at 0x24`. If it does
+  not, nothing else on this list can pass: the panel reset and backlight both
+  depend on that device answering.
+- [ ] Serial log shows `board_lcd: ST7789 240x320 ready at 40 MHz`, and the
+  panel actually lights.
+- [ ] Backlight tracks the dashboard slider and the night schedule. The duty
+  register is 0-255 and AirTrack clamps to 50 percent, so full brightness
+  should write 128.
+- [ ] Colours are correct, not inverted or byte-swapped, and the image is not
+  mirrored or offset. `BOARD_LCD_MIRROR_X`, `BOARD_LCD_MIRROR_Y`, and the
+  `0x21` (INVON) entry in the init table are the knobs if it is wrong.
+- [ ] Try `st7789_d0_param_count` at both 1 and 2. The 2.8 defaults to the
+  Arduino behaviour (both bytes) because that is what its only vendor demo
+  does; confirm that is right on real hardware.
+- [ ] The panel clock is set to 40 MHz against the vendor demo's 80 MHz,
+  because SPI2 is shared with the SD card. Confirm the display is clean at 40,
+  then decide whether to raise it after a combined LCD+SD soak.
+
+Shared SPI bus:
+
+- [ ] A FAT32 card mounts (`board_sd`, CS GPIO23, MISO GPIO8) and is not
+  formatted.
+- [ ] Sustained sighting logging while the display refreshes shows no
+  corruption on either device, which is what the SPI gate exists to prevent.
+- [ ] Removing the card leaves tracking running.
+
+Sensors:
+
+- [ ] Serial log shows `sensors: SHTC3 present`, and the dashboard System card
+  shows a plausible `On-board climate` row. `/api/v1/status` carries
+  `temperature_c` and `humidity_percent`.
+- [ ] Serial log shows the PCF85063A. After SNTP syncs, power-cycle with the
+  router unreachable and confirm `Clock seeded from the on-board RTC` and that
+  the device does not sit in TIME_SYNC.
+- [ ] A cold board with no held time logs the stopped-oscillator message and
+  falls back to SNTP without erroring.
+
+Updates, which is where a mistake is most expensive:
+
+- [ ] `/api/v1/status` reports `"board":"esp32c6-touch-lcd-2.8"`.
+- [ ] Point the device at the 1.47 manifest and confirm the check **fails**
+  with `manifest is for esp32c6-lcd-1.47` and does not offer the version. This
+  is the check that stops a cross-board install; verify it before publishing
+  anything.
+- [ ] A 1.47 unit still updates from its own untagged and board-tagged
+  manifests, unchanged.
+- [ ] A full 2.8 update round trip: download, verify, restart into the other
+  slot, self-test passes, image marked valid.
+- [ ] The browser installer's board selector installs a blank 2.8 and the
+  device comes up in setup mode.
+
+UI at 240 pixels:
+
+- [ ] `AIRTRACK_BUILD_DIR=build-production-touch28
+  tools/host_ui_render/render.sh build-host-ui-touch28` renders every screen,
+  and the compass, distance, radar, and route columns are centred with nothing
+  clipped or overlapping.
+- [ ] Same check on the real panel for the live, empty, stale, offline,
+  updating, and both setup screens.
+- [ ] The setup QR scans from a phone at the larger size.
+
+Expected differences, to confirm rather than treat as faults:
+
+- [ ] No status LED. `board_rgb_*` returns `ESP_ERR_NOT_SUPPORTED`, the System
+  card shows no LED state, and the night-mode "LED off" option does nothing.
+- [ ] The touch panel does nothing. AirTrack has no touch input.
+
 ## Required before final field sign-off
 
 - [ ] Enter the device's actual fixed latitude, longitude, and radius on its
@@ -107,15 +190,29 @@ the physical device, its real fixed location, or elapsed soak time.
 
 ```sh
 GITHUB_TOKEN=... tools/publish_release.sh <version> "release notes"
+GITHUB_TOKEN=... tools/publish_release.sh --board esp32c6-touch-lcd-2.8 \
+    <version> "release notes"
 ```
 
+Each board is published separately and independently; publishing one does not
+touch the other's manifest or factory image.
+
 The script refuses a dirty tree or a version that does not match
-`CMakeLists.txt`, runs the gate below, uploads the artifact to the GitHub
-Release, and pushes `docs/firmware/manifest.json` (that push is what makes
+`CMakeLists.txt`, runs the gate for that board, uploads the artifact to the
+GitHub Release, and pushes the board's manifest (that push is what makes
 devices see the update). It also merges the bootloader, partition table,
-otadata, and app into `docs/firmware/airtrack-<version>-factory.bin`, updates
-`docs/firmware/web-flash.json`, and drops the previous factory image, which is
+otadata, and app into the board's factory image, updates the matching
+`web-flash` manifest, and drops that board's previous factory image, which is
 what the browser installer (`docs/flash.html`) writes over USB.
+
+| | 1.47 | Touch 2.8 |
+|---|---|---|
+| OTA manifest | `manifest.json` | `manifest-esp32c6-touch-lcd-2.8.json` |
+| Installer manifest | `web-flash.json` | `web-flash-esp32c6-touch-lcd-2.8.json` |
+
+Every published manifest carries a `board` field. Devices refuse one that
+names different hardware, so a mis-pointed manifest is a failed check rather
+than an install that leaves the panel dark.
 
 After publishing, check the installer page:
 

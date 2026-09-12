@@ -41,6 +41,10 @@ typedef struct {
     uint32_t polls_ok;
     uint32_t polls_failed;
     uint32_t tls_connections;
+    /* On-board temperature/humidity, where the board has the sensor. */
+    bool environment_valid;
+    float temperature_c;
+    float humidity_percent;
     const airtrack_settings_t *settings;
     const airtrack_snapshot_t *aircraft;
 } status_web_snapshot_t;

@@ -1,0 +1,20 @@
+# Waveshare ESP32-C6-Touch-LCD-2.8 overrides.
+#
+# Apply on top of sdkconfig.defaults, which holds everything the boards share:
+#
+#   idf.py -B build-touch28 \
+#       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c6-touch-lcd-2.8" \
+#       -D SDKCONFIG=build-touch28/sdkconfig \
+#       build
+#
+# SDKCONFIG matters. Without it idf.py keeps one sdkconfig at the project
+# root and reuses it for every build directory, so the next board built
+# would silently inherit these settings.
+#
+# tools/check_release.sh --board esp32c6-touch-lcd-2.8 does all of this.
+
+CONFIG_AIRTRACK_BOARD_TOUCH_LCD_2_8=y
+
+# 16 MB part, and app slots sized to match.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb.csv"

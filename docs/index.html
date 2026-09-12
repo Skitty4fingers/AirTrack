@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AirTrack &mdash; the nearest aircraft overhead</title>
-<meta name="description" content="AirTrack turns a Waveshare ESP32-C6-LCD-1.47 into a live display of the closest aircraft overhead, with a dashboard on your own network. Install it from your browser.">
+<meta name="description" content="AirTrack turns a Waveshare ESP32-C6 display board into a live display of the closest aircraft overhead, with a dashboard on your own network. Install it from your browser.">
 <style>
   :root{
     color-scheme:light;
@@ -125,14 +125,14 @@
   </svg>
   <div class="wrap">
     <div>
-      <span class="chip"><span class="dot"></span>Firmware <span id="ver">1.6.3</span> &middot; free and open source</span>
+      <span class="chip"><span class="dot"></span>Firmware <span id="ver">1.7.0</span> &middot; free and open source</span>
       <h1>The nearest aircraft overhead, on your desk.</h1>
       <p class="sub">AirTrack turns a small ESP32-C6 display into a live view of the closest aircraft to you &mdash; callsign, type, distance, bearing, altitude and route &mdash; with a full dashboard on your own network.</p>
       <div class="actions">
         <a class="btn btn-primary" href="flash.html"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>Install from your browser</a>
         <a class="btn btn-ghost" href="https://github.com/Skitty4fingers/AirTrack"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48l-.01-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85l-.01 2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>View the source</a>
       </div>
-      <p class="fine">Needs a Waveshare ESP32-C6-LCD-1.47 and a desktop Chrome, Edge, or Opera. No receiver, no soldering, no toolchain.</p>
+      <p class="fine">Needs a Waveshare ESP32-C6-LCD-1.47 or ESP32-C6-Touch-LCD-2.8, and a desktop Chrome, Edge, or Opera. No receiver, no soldering, no toolchain.</p>
     </div>
     <div class="shot">
       <img src="ui/lcd-states.png" alt="Four AirTrack display states: a tracked flight with route and ETA, no recent reports, Wi-Fi lost, and first-time setup" width="1416" height="656" loading="lazy">
@@ -186,7 +186,7 @@
   <div class="wrap">
     <div class="sec-head">
       <h2>Frequently asked questions</h2>
-      <p>Everything below describes firmware 1.6.3, the release this page installs.</p>
+      <p>Everything below describes firmware 1.7.0, the release this page installs.</p>
     </div>
 
     <div class="faq-group">
@@ -195,7 +195,7 @@
       <details open>
         <summary>What hardware do I need?</summary>
         <div class="body">
-          <p>A <b>Waveshare ESP32-C6-LCD-1.47</b> with 8 MB of flash, and a USB-C <i>data</i> cable. That is the whole shopping list &mdash; the board has the display, the Wi-Fi radio, and a status LED built in.</p>
+          <p>A <b>Waveshare ESP32-C6-LCD-1.47</b> (8 MB flash, 1.47&Prime; screen, status LED) or a <b>Waveshare ESP32-C6-Touch-LCD-2.8</b> (16 MB flash, larger 2.8&Prime; screen, no status LED), plus a USB-C <i>data</i> cable. That is the whole shopping list &mdash; either board has the display and the Wi-Fi radio built in. The installer asks which one you have.</p>
           <p>A microSD card is optional and only needed if you want the sighting log. Format it FAT32; AirTrack never formats a card itself. Wi-Fi must be a 2.4 GHz network, since the ESP32-C6 does not join 5 GHz.</p>
         </div>
       </details>
