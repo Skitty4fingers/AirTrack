@@ -79,7 +79,10 @@ fi
 "${project_dir}/tools/run_host_tests.sh"
 
 source "${idf_dir}/export.sh" >/dev/null
-idf.py -B "${build_dir}" -D SDKCONFIG_DEFAULTS="${sdkconfig_defaults}" build
+# SDKCONFIG must live inside the build directory.  idf.py otherwise keeps one
+# sdkconfig at the project root and reuses it across build directories, so
+# building a second board would silently inherit the first board's settings.
+idf.py -B "${build_dir}"     -D SDKCONFIG_DEFAULTS="${sdkconfig_defaults}"     -D SDKCONFIG="${build_dir}/sdkconfig"     build
 
 # The generated config must actually name the board that was asked for, so a
 # stale build directory cannot be published under the wrong board identifier.

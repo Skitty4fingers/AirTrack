@@ -4,9 +4,14 @@
 #
 #   idf.py -B build-touch28 \
 #       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c6-touch-lcd-2.8" \
+#       -D SDKCONFIG=build-touch28/sdkconfig \
 #       build
 #
-# tools/check_release.sh --board esp32c6-touch-lcd-2.8 does this for you.
+# SDKCONFIG matters. Without it idf.py keeps one sdkconfig at the project
+# root and reuses it for every build directory, so the next board built
+# would silently inherit these settings.
+#
+# tools/check_release.sh --board esp32c6-touch-lcd-2.8 does all of this.
 
 CONFIG_AIRTRACK_BOARD_TOUCH_LCD_2_8=y
 

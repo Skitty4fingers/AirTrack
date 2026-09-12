@@ -97,13 +97,22 @@ own file on top:
 
 ```sh
 # 1.47 (default)
-idf.py -B build-production build
+idf.py -B build-production \
+    -D SDKCONFIG=build-production/sdkconfig \
+    build
 
 # Touch LCD 2.8
 idf.py -B build-production-touch28 \
     -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c6-touch-lcd-2.8" \
+    -D SDKCONFIG=build-production-touch28/sdkconfig \
     build
 ```
+
+Always pass `SDKCONFIG`. By default `idf.py` keeps a single `sdkconfig` at
+the project root and reuses it for every build directory, so building one
+board after another silently gives the second build the first board's
+settings, and an image labelled for hardware it was not built for. Putting
+the config inside the build directory is what makes `-B` independent.
 
 `tools/check_release.sh --board <id>` does this for you and additionally
 verifies that the generated config really names the board it was asked for, so

@@ -306,6 +306,12 @@ idf.py -B build-production -p /dev/ttyACM0 flash monitor
 idf.py -B build-production-touch28 -p /dev/ttyACM0 flash monitor
 ```
 
+Building by hand rather than through the release script, pass `SDKCONFIG`
+as well as `SDKCONFIG_DEFAULTS`: `idf.py` otherwise keeps one `sdkconfig`
+at the project root and reuses it across build directories, so the second
+board you build inherits the first one's settings. See
+[the board notes](docs/BOARDS.md#building-for-a-board).
+
 The release check runs host tests, verifies the secure transport, the
 non-formatting SD policy, and the OTA board check, confirms the build really
 is configured for the requested board, builds the production image, enforces
