@@ -1,4 +1,9 @@
-# Hardware and image layout
+# Hardware and image layout.
+#
+# These are the defaults for the original Waveshare ESP32-C6-LCD-1.47.  Every
+# other board layers its own file on top; see
+# sdkconfig.defaults.esp32c6-touch-lcd-2.8 and tools/check_release.sh --board.
+CONFIG_AIRTRACK_BOARD_LCD_1_47=y
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

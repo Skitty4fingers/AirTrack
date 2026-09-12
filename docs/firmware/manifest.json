@@ -1,5 +1,6 @@
 {
   "version": "1.6.3",
+  "board": "esp32c6-lcd-1.47",
   "size": 1801840,
   "sha256": "52db9d532b45213e8e5194ca83117b015b7bed8d6363830290479f82015bb05c",
   "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.6.3/airtrack-1.6.3.bin",

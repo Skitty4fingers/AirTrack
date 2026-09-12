@@ -1,14 +1,26 @@
 # AirTrack
 
-AirTrack is self-contained firmware for the Waveshare ESP32-C6-LCD-1.47. It
+AirTrack is self-contained firmware for Waveshare ESP32-C6 display boards. It
 connects to Wi-Fi, requests nearby traffic from adsb.fi, and shows the closest
-fresh aircraft to a configured fixed location on the 172 x 320 display and a
-local web dashboard.
+fresh aircraft to a configured fixed location on the display and a local web
+dashboard.
 
-This tree targets the connected ESP32-C6FH8 revision with 8 MB embedded flash
-and no PSRAM. Verify the flash capacity before installing it on another board
-revision. AirTrack is an enthusiast display, not a receiver, navigation aid,
-or collision-warning device.
+Two boards are supported, selected at build time:
+
+| Board | Panel | Flash | Notes |
+|---|---|---|---|
+| **ESP32-C6-LCD-1.47** | 172 x 320 | 8 MB | The original target. WS2812B status LED. |
+| **ESP32-C6-Touch-LCD-2.8** | 240 x 320 | 16 MB | Backlight and panel reset via a CH32V003 I2C expander. Adds an RTC that holds the clock across restarts and an SHTC3 shown on the dashboard. No status LED. The touch panel is not used. |
+
+Images are not interchangeable, and nothing tries to make them so: the
+manifest URL is compiled in per board and carries a board identifier the
+firmware checks before offering an update. Verify the flash capacity before
+installing on another revision of either board. See
+[the board notes](docs/BOARDS.md) for pin maps, the expander register map, and
+what it takes to add a third board.
+
+AirTrack is an enthusiast display, not a receiver, navigation aid, or
+collision-warning device.
 
 A finished build installs straight from
 <https://skitty4fingers.github.io/AirTrack/flash.html> over USB, with no
@@ -59,8 +71,9 @@ board over USB:
 <https://skitty4fingers.github.io/AirTrack/flash.html> installs the current
 release over USB with nothing to download and no toolchain. It needs Chrome,
 Edge, or Opera on a desktop &mdash; Web Serial does not exist in Firefox,
-Safari, or on phones &mdash; and a USB-C *data* cable. Plug the board in, press
-**Install**, and pick the serial port that appears.
+Safari, or on phones &mdash; and a USB-C *data* cable. **Pick your board from
+the selector**, plug it in, press **Install**, and choose the serial port that
+appears.
 
 The page writes one merged factory image (bootloader, partition table, OTA
 data, and firmware, at offset 0) using
@@ -84,10 +97,11 @@ Two notes on how that page is hosted:
 ### Updating a device that already runs AirTrack
 
 Use the dashboard, not the installer page &mdash; the installer erases stored
-settings. Since 1.6.0 the **Updates** card checks
-`docs/firmware/manifest.json` on GitHub Pages over HTTPS, shows the installed
-and latest versions with the release notes, and installs into the spare OTA
-slot with size and SHA-256 verification, keeping every setting. The bootloader
+settings. Since 1.6.0 the **Updates** card checks its board's manifest on
+GitHub Pages over HTTPS, shows the installed and latest versions with the
+release notes, and installs into the spare OTA slot with size and SHA-256
+verification, keeping every setting. Each board has its own manifest, and a
+manifest naming different hardware is refused rather than installed. The bootloader
 returns to the previous slot by itself if a new image fails its start-up
 self-test. Releases are published with `tools/publish_release.sh`; see
 [the OTA notes](docs/OTA_PLAN.md).
@@ -101,6 +115,18 @@ development, and the fallback when no Web Serial browser is available.
 ## Firmware status
 
 The current release is AirTrack 1.6.3.
+
+Unreleased:
+
+- Support for the Waveshare ESP32-C6-Touch-LCD-2.8 (240 x 320, 16 MB)
+  alongside the 1.47. One Kconfig choice selects the board; the panel,
+  backlight-over-I2C, SD, and status-LED differences are contained in
+  `components/board`. The 2.8's PCF85063A RTC seeds the clock at boot so a
+  restart out of Internet reach is not stuck waiting for SNTP, and its SHTC3
+  temperature/humidity reading appears on the dashboard and in
+  `/api/v1/status`. Releases, manifests, and factory images are now per board,
+  and the firmware refuses a manifest that names different hardware. The touch
+  panel is not used. See [the board notes](docs/BOARDS.md).
 
 Changes in 1.6.x:
 
@@ -265,17 +291,25 @@ app slot free.
 
 ## Build, verify, and flash
 
-Use ESP-IDF 5.5.5:
+Use ESP-IDF 5.5.5. The board defaults to the 1.47; pass `--board` for the
+other one.
 
 ```sh
 source /home/skitty/esp/esp-idf-v5.5.5/export.sh
+
+# ESP32-C6-LCD-1.47
 ./tools/check_release.sh
 idf.py -B build-production -p /dev/ttyACM0 flash monitor
+
+# ESP32-C6-Touch-LCD-2.8
+./tools/check_release.sh --board esp32c6-touch-lcd-2.8
+idf.py -B build-production-touch28 -p /dev/ttyACM0 flash monitor
 ```
 
-The release check runs host tests, verifies the secure transport and
-non-formatting SD policies, builds the production image, enforces the image
-budget, and prints SHA-256 hashes. Flashing does not erase the NVS partition;
+The release check runs host tests, verifies the secure transport, the
+non-formatting SD policy, and the OTA board check, confirms the build really
+is configured for the requested board, builds the production image, enforces
+the image budget, and prints SHA-256 hashes. Flashing does not erase the NVS partition;
 do not run `erase-flash` when preserving configured Wi-Fi and settings.
 
 To build the single-file image the browser installer writes &mdash; useful for
@@ -291,12 +325,17 @@ python3 -m esptool --chip esp32c6 merge_bin -o airtrack-factory.bin \
 python3 -m esptool --chip esp32c6 -p /dev/ttyACM0 write_flash 0x0 airtrack-factory.bin
 ```
 
-`tools/publish_release.sh` runs the same merge and commits the result under
-`docs/firmware/`, which is what GitHub Pages serves to the installer page.
+`tools/publish_release.sh [--board <id>]` runs the same merge and commits the
+result under `docs/firmware/`, which is what GitHub Pages serves to the
+installer page. Use `--flash_size 16MB` in the manual command above for the
+2.8.
 
 To review the LCD screens without the board, run
-`tools/host_ui_render/render.sh` (needs a host C compiler and the `build/`
-sdkconfig); it writes PNGs of every screen to `build-host-ui/`. To exercise the
+`tools/host_ui_render/render.sh` (needs a host C compiler and a built
+`sdkconfig.h`); it writes PNGs of every screen to `build-host-ui/`. The panel
+geometry comes from the build you point it at, so
+`AIRTRACK_BUILD_DIR=build-production-touch28 tools/host_ui_render/render.sh
+build-host-ui-touch28` renders the 240-pixel screens instead. To exercise the
 Wi-Fi recovery round trip on a bench with the router still present, build once
 with `AIRTRACK_TEST_FORCE_RECOVERY_MS=25000 idf.py -B build-recovery-test build`
 and watch the serial log; never ship that image.

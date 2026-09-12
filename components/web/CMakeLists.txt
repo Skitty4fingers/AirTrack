@@ -7,6 +7,7 @@ idf_component_register(
         "assets/app.css"
         "assets/app.js"
     REQUIRES
+        board
         config
         esp_http_server
         ota

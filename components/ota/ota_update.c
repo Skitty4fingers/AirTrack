@@ -1,5 +1,7 @@
 #include "ota_update.h"
 
+#include "board.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,6 +193,7 @@ static void run_check(void)
     char url[OTA_URL_MAX_BYTES + 1U] = "";
     char notes[OTA_NOTES_MAX_BYTES + 1U] = "";
     char released[11] = "";
+    char board[OTA_BOARD_MAX_BYTES + 1U] = "";
     char sha_text[80] = "";
     uint8_t sha[32];
     const cJSON *size_item = cJSON_GetObjectItemCaseSensitive(root, "size");
@@ -202,10 +205,35 @@ static void run_check(void)
         size_item->valuedouble >= OTA_MIN_IMAGE_BYTES && allowed_https_url(url);
     (void)copy_json_string(cJSON_GetObjectItemCaseSensitive(root, "notes"), notes, sizeof(notes));
     (void)copy_json_string(cJSON_GetObjectItemCaseSensitive(root, "released"), released, sizeof(released));
+    const bool have_board =
+        copy_json_string(cJSON_GetObjectItemCaseSensitive(root, "board"), board, sizeof(board));
     const uint32_t size = ok ? (uint32_t)size_item->valuedouble : 0U;
     cJSON_Delete(root);
     if (!ok) {
         set_state(OTA_STATE_FAILED, "manifest: unexpected content");
+        return;
+    }
+
+    /*
+     * An image built for another board would flash cleanly and then leave the
+     * device dark, so a manifest that names a different board is refused
+     * before its version is ever offered.  Manifests published before board
+     * identifiers existed carry no "board" key; those are only honoured by
+     * the board they were originally published for, which is the one whose
+     * devices are already polling that URL.
+     */
+    if (have_board) {
+        if (strcmp(board, BOARD_ID) != 0) {
+            char error[OTA_ERROR_MAX_BYTES + 1U];
+            (void)snprintf(error, sizeof(error), "manifest is for %s", board);
+            ESP_LOGE(TAG, "Refusing manifest for board %s; this is %s", board,
+                     BOARD_ID);
+            set_state(OTA_STATE_FAILED, error);
+            return;
+        }
+    } else if (!OTA_ACCEPTS_UNTAGGED_MANIFEST) {
+        ESP_LOGE(TAG, "Refusing manifest with no board identifier");
+        set_state(OTA_STATE_FAILED, "manifest names no board");
         return;
     }
 
@@ -222,7 +250,8 @@ static void run_check(void)
     s_ota.status.state = newer ? OTA_STATE_AVAILABLE : OTA_STATE_UP_TO_DATE;
     s_ota.status.error[0] = '\0';
     xSemaphoreGive(s_ota.lock);
-    ESP_LOGI(TAG, "manifest: %s (%lu bytes) — %s", version, (unsigned long)size,
+    ESP_LOGI(TAG, "manifest: %s for %s (%lu bytes) — %s", version,
+             have_board ? board : "(untagged)", (unsigned long)size,
              newer ? "update available" : "up to date");
 }
 

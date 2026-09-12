@@ -5,7 +5,10 @@
 
 #include "board.h"
 #include "freertos/semphr.h"
+
+#if BOARD_HAS_RGB_LED
 #include "led_strip.h"
+#endif
 
 typedef struct {
     bool init_in_progress;
@@ -28,7 +31,18 @@ typedef struct {
     esp_lcd_panel_io_handle_t panel_io;
     esp_lcd_panel_handle_t panel;
     sdmmc_card_t *sd_card;
+#if BOARD_HAS_RGB_LED
     led_strip_handle_t rgb_strip;
+#endif
+#if BOARD_HAS_I2C_BUS
+    i2c_master_bus_handle_t i2c_bus;
+#endif
+#if BOARD_HAS_IO_EXPANDER
+    bool exio_ready;
+    i2c_master_dev_handle_t exio_device;
+    /* Shadow of the expander's output register; it is write-only in use. */
+    uint8_t exio_outputs;
+#endif
 } board_state_t;
 
 extern board_state_t g_board_state;
@@ -49,3 +63,18 @@ void board_internal_sd_unmount(void);
 
 esp_err_t board_internal_lcd_init(uint8_t d0_param_count);
 void board_internal_lcd_deinit(void);
+
+#if BOARD_HAS_I2C_BUS
+/* Bring up the shared I2C bus and, where present, the I/O expander on it. */
+esp_err_t board_internal_i2c_init(void);
+void board_internal_i2c_deinit(void);
+#endif
+
+#if BOARD_HAS_IO_EXPANDER
+/* Drive one expander output channel. */
+esp_err_t board_internal_exio_set(uint8_t channel, bool level);
+/* Write the expander's 8-bit backlight duty register directly. */
+esp_err_t board_internal_exio_set_pwm(uint8_t duty);
+/* Pulse the panel reset line with the vendor's timings. */
+esp_err_t board_internal_exio_reset_panel(void);
+#endif

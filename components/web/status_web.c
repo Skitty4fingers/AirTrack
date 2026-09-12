@@ -1,5 +1,7 @@
 #include "status_web.h"
 
+#include "board.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <ctype.h>
@@ -52,6 +54,9 @@ typedef struct {
     uint32_t polls_ok;
     uint32_t polls_failed;
     uint32_t tls_connections;
+    bool environment_valid;
+    float temperature_c;
+    float humidity_percent;
     airtrack_settings_t settings;
     airtrack_snapshot_t aircraft;
 } status_web_snapshot_storage_t;
@@ -336,6 +341,9 @@ static esp_err_t normalize_snapshot(
     destination->polls_ok = source->polls_ok;
     destination->polls_failed = source->polls_failed;
     destination->tls_connections = source->tls_connections;
+    destination->environment_valid = source->environment_valid;
+    destination->temperature_c = source->temperature_c;
+    destination->humidity_percent = source->humidity_percent;
     destination->settings = *source->settings;
     destination->aircraft = *source->aircraft;
     return ESP_OK;
@@ -1311,7 +1319,7 @@ static esp_err_t send_system_card(httpd_req_t *request,
 {
     char version[STATUS_WEB_VERSION_MAX_BYTES + 1U];
     copy_firmware_version(version);
-    char text[768];
+    char text[1024];
     char signal[24];
     if (snapshot->rssi_available) {
         (void)snprintf(signal, sizeof(signal), "%d dBm", (int)snapshot->rssi_dbm);
@@ -1336,6 +1344,15 @@ static esp_err_t send_system_card(httpd_req_t *request,
     } else {
         memcpy(sd, "Card mounted &middot; logging off",
                sizeof("Card mounted &middot; logging off"));
+    }
+    /* Only rendered on boards that carry a temperature/humidity sensor. */
+    char environment[96] = "";
+    if (snapshot->environment_valid) {
+        (void)snprintf(environment, sizeof(environment),
+                       "<span>On-board climate</span>"
+                       "<b id=env>%.1f &deg;C &middot; %.0f%% RH</b>",
+                       (double)snapshot->temperature_c,
+                       (double)snapshot->humidity_percent);
     }
     ota_status_t ota;
     (void)ota_get_status(&ota);
@@ -1374,6 +1391,8 @@ static esp_err_t send_system_card(httpd_req_t *request,
             "<span>Feed polls</span><b id=polls>%lu ok &middot; %lu failed &middot; %lu TLS sessions</b>"
             "<span>Heap</span><b id=heap>%lu KiB free &middot; min %lu KiB</b>"
             "<span>SD card</span><b id=sd>%s</b>"
+            "%s"
+            "<span>Board</span><b>" BOARD_NAME "</b>"
             "<span>Flash</span><b>%lu MiB</b></div></div>"
             "<form id=rb method=post action=/api/v1/reboot>"
             "<input type=hidden name=csrf_token value=\"",
@@ -1386,7 +1405,8 @@ static esp_err_t send_system_card(httpd_req_t *request,
             (unsigned long)snapshot->tls_connections,
             (unsigned long)(snapshot->free_heap_bytes / 1024U),
             (unsigned long)(snapshot->minimum_free_heap_bytes / 1024U),
-            sd, (unsigned long)(snapshot->flash_bytes / (1024U * 1024U)));
+            sd, environment,
+            (unsigned long)(snapshot->flash_bytes / (1024U * 1024U)));
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
     if (result == ESP_OK) {
@@ -1559,10 +1579,24 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             return ESP_ERR_INVALID_SIZE;
         }
 
-        char tail[640];
+        /* Absent on boards with no temperature/humidity sensor. */
+        char environment[80] = "";
+        if (snapshot.environment_valid) {
+            const int written = snprintf(
+                environment, sizeof(environment),
+                ",\"temperature_c\":%.1f,\"humidity_percent\":%.1f",
+                (double)snapshot.temperature_c,
+                (double)snapshot.humidity_percent);
+            if (written < 0 || (size_t)written >= sizeof(environment)) {
+                return ESP_ERR_INVALID_SIZE;
+            }
+        }
+
+        char tail[768];
         const int length = snprintf(
             tail, sizeof(tail),
-            "\",\"rssi_dbm\":%s,\"sd_mounted\":%s,\"flash_bytes\":%lu,"
+            "\",\"board\":\"" BOARD_ID "\","
+            "\"rssi_dbm\":%s,\"sd_mounted\":%s,\"flash_bytes\":%lu,"
             "\"uptime_s\":%lu,\"free_heap_bytes\":%lu,"
             "\"minimum_free_heap_bytes\":%lu,\"time_synchronized\":%s,"
             "\"feed_state\":\"%s\",\"feed_error\":\"%s\","
@@ -1570,7 +1604,7 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             "\"polls_ok\":%lu,\"polls_failed\":%lu,\"tls_connections\":%lu,"
             "\"sd_logging\":%s,\"sd_records\":%lu,\"sd_log_bytes\":%llu,"
             "\"sd_log_files\":%lu,\"sd_files_pruned\":%lu,"
-            "\"night\":%s,\"local_minutes\":%d}",
+            "\"night\":%s,\"local_minutes\":%d%s}",
             rssi,
             snapshot.sd_mounted ? "true" : "false",
             (unsigned long)snapshot.flash_bytes,
@@ -1590,7 +1624,8 @@ static esp_err_t status_api_handler(httpd_req_t *request)
             (unsigned long long)snapshot.sd_log_bytes,
             (unsigned long)snapshot.sd_log_files,
             (unsigned long)snapshot.sd_files_pruned,
-            snapshot.night ? "true" : "false", snapshot.local_minutes);
+            snapshot.night ? "true" : "false", snapshot.local_minutes,
+            environment);
         if (length < 0 || (size_t)length >= sizeof(tail)) {
             return ESP_ERR_INVALID_SIZE;
         }

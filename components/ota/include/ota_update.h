@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "board.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -11,6 +12,20 @@ extern "C" {
 #endif
 
 #define OTA_VERSION_MAX_BYTES 31U
+#define OTA_BOARD_MAX_BYTES 31U
+
+/*
+ * Manifests published before AirTrack supported more than one board carry no
+ * "board" key.  Only the original board may still install those: its deployed
+ * devices are the ones already polling that manifest URL.  Every other board
+ * requires an explicit match, so a mis-pointed manifest cannot install an
+ * image that would leave the panel dark.
+ */
+#if defined(CONFIG_AIRTRACK_BOARD_LCD_1_47)
+#define OTA_ACCEPTS_UNTAGGED_MANIFEST 1
+#else
+#define OTA_ACCEPTS_UNTAGGED_MANIFEST 0
+#endif
 #define OTA_NOTES_MAX_BYTES 480U
 #define OTA_URL_MAX_BYTES 255U
 #define OTA_ERROR_MAX_BYTES 63U

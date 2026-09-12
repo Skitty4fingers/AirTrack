@@ -1,11 +1,11 @@
 /*
- * The initialization sequence in this file is derived from Waveshare's
- * ESP32-C6-LCD-1.47 native ESP-IDF demo, whose ST7789T driver carries:
+ * The initialization sequences in this file are derived from Waveshare's
+ * board demos, whose ST7789 drivers carry:
  *
  * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
  * SPDX-License-Identifier: Apache-2.0
  *
- * AirTrack retains the native sequence and explicitly exposes its unusual D0
+ * AirTrack retains each vendor sequence and explicitly exposes the unusual D0
  * parameter count for hardware validation. Error handling and the surrounding
  * esp_lcd integration are new for this board component.
  */
@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "board_profile.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
@@ -25,13 +26,6 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#define BOARD_SPI_HOST SPI2_HOST
-#define BOARD_PIN_LCD_CS 14
-#define BOARD_PIN_LCD_DC 15
-#define BOARD_PIN_LCD_RESET 21
-#define BOARD_LCD_PIXEL_CLOCK_HZ (12U * 1000U * 1000U)
-#define BOARD_LCD_QUEUE_DEPTH 3U
 
 #define ST7789_CMD_RAMCTRL 0xB0
 
@@ -44,6 +38,9 @@ typedef struct {
     uint16_t delay_ms;
 } st7789_init_command_t;
 
+#if defined(CONFIG_AIRTRACK_BOARD_LCD_1_47)
+
+/* Waveshare ESP32-C6-LCD-1.47 native ESP-IDF demo sequence. */
 static const st7789_init_command_t s_waveshare_init[] = {
     {LCD_CMD_SLPOUT, {0}, 0, 100},
     {LCD_CMD_MADCTL, {0x00}, 1, 0},
@@ -66,6 +63,44 @@ static const st7789_init_command_t s_waveshare_init[] = {
     {LCD_CMD_DISPON, {0}, 0, 0},
     {LCD_CMD_RAMWR, {0}, 0, 0},
 };
+
+#else
+
+/*
+ * Waveshare ESP32-C6-Touch-LCD-2.8 Arduino demo sequence.
+ *
+ * It differs from the 1.47 in three ways that matter: the panel is woken with
+ * DISPON before SLPOUT, power control 0xC0 is 0x2C rather than 0x80, and an
+ * extra 0xD6 command follows 0xD0.  The gamma tables and the 0xD0 pair are
+ * identical.  The vendor's leading DISPON/SLPOUT/delay dance is reproduced
+ * verbatim: it is what the shipped factory firmware does.
+ */
+static const st7789_init_command_t s_waveshare_init[] = {
+    {LCD_CMD_DISPON, {0}, 0, 120},
+    {LCD_CMD_SLPOUT, {0}, 0, 120},
+    {LCD_CMD_MADCTL, {0x00}, 1, 0},
+    {LCD_CMD_COLMOD, {0x55}, 1, 0},
+    {ST7789_CMD_RAMCTRL, {0x00, 0xE8}, 2, 0},
+    {0xB2, {0x0C, 0x0C, 0x00, 0x33, 0x33}, 5, 0},
+    {0xB7, {0x75}, 1, 0},
+    {0xBB, {0x1A}, 1, 0},
+    {0xC0, {0x2C}, 1, 0},
+    {0xC2, {0x01, 0xFF}, 2, 0},
+    {0xC3, {0x13}, 1, 0},
+    {0xC4, {0x20}, 1, 0},
+    {0xC6, {0x0F}, 1, 0},
+    {0xD0, {0xA4, 0xA1}, 2, 0},
+    {0xD6, {0xA1}, 1, 0},
+    {0xE0, {0xD0, 0x0D, 0x14, 0x0D, 0x0D, 0x09, 0x38,
+            0x44, 0x4E, 0x3A, 0x17, 0x18, 0x2F, 0x30}, 14, 0},
+    {0xE1, {0xD0, 0x09, 0x0F, 0x08, 0x07, 0x14, 0x37,
+            0x44, 0x4D, 0x38, 0x15, 0x16, 0x2C, 0x2E}, 14, 0},
+    {LCD_CMD_INVON, {0}, 0, 0},
+    {LCD_CMD_DISPON, {0}, 0, 0},
+    {LCD_CMD_RAMWR, {0}, 0, 0},
+};
+
+#endif
 
 static esp_err_t send_waveshare_init(uint8_t d0_param_count)
 {
@@ -154,6 +189,7 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
     }
 
     const esp_lcd_panel_dev_config_t panel_config = {
+        /* -1 where the reset line belongs to the I/O expander instead. */
         .reset_gpio_num = BOARD_PIN_LCD_RESET,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .data_endian = LCD_RGB_DATA_ENDIAN_BIG,
@@ -166,6 +202,19 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
         goto done;
     }
 
+#if BOARD_HAS_IO_EXPANDER
+    /*
+     * esp_lcd_panel_reset() only issues a soft reset when it owns no reset
+     * pin, so pulse the real line over I2C first and let the soft reset
+     * follow it.
+     */
+    err = board_internal_exio_reset_panel();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Panel reset over the I/O expander failed: %s",
+                 esp_err_to_name(err));
+        goto done;
+    }
+#endif
     err = esp_lcd_panel_reset(g_board_state.panel);
     if (err != ESP_OK) {
         goto done;
@@ -179,7 +228,8 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
     if (err != ESP_OK) {
         goto done;
     }
-    err = esp_lcd_panel_mirror(g_board_state.panel, true, false);
+    err = esp_lcd_panel_mirror(g_board_state.panel, BOARD_LCD_MIRROR_X,
+                               BOARD_LCD_MIRROR_Y);
     if (err != ESP_OK) {
         goto done;
     }
@@ -189,7 +239,10 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
     }
 
     g_board_state.lcd_ready = true;
-    ESP_LOGI(TAG, "ST7789 ready at 12 MHz, BGR/mirror-X, gap=(%u,%u)",
+    ESP_LOGI(TAG, "ST7789 %ux%u ready at %lu MHz, BGR, mirror=(%d,%d), gap=(%u,%u)",
+             BOARD_LCD_H_RES, BOARD_LCD_V_RES,
+             (unsigned long)(BOARD_LCD_PIXEL_CLOCK_HZ / 1000000U),
+             (int)BOARD_LCD_MIRROR_X, (int)BOARD_LCD_MIRROR_Y,
              BOARD_LCD_X_GAP, BOARD_LCD_Y_GAP);
 
 done:

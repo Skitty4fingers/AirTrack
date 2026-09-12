@@ -5,3 +5,5 @@
 /sdkconfig.old
 /.cache/
 /build-host-ui/
+/__pycache__/
+**/__pycache__/

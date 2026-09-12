@@ -1,0 +1,33 @@
+menu "AirTrack board"
+
+choice AIRTRACK_BOARD
+    prompt "Target board"
+    default AIRTRACK_BOARD_LCD_1_47
+    help
+        AirTrack is board-specific: the pin map, panel geometry, backlight
+        path, and available peripherals all differ between supported boards.
+        Select the board this image is built for.  Installing an image built
+        for the wrong board leaves the display dark; the OTA manifest carries
+        a board identifier so the device refuses a mismatched update.
+
+    config AIRTRACK_BOARD_LCD_1_47
+        bool "Waveshare ESP32-C6-LCD-1.47"
+        help
+            172 x 320 ST7789 on SPI2, 34-pixel X RAM offset, backlight on
+            GPIO22 (LEDC), WS2812B status LED on GPIO8, microSD on GPIO4,
+            8 MB flash.  This is the original AirTrack target.
+
+    config AIRTRACK_BOARD_TOUCH_LCD_2_8
+        bool "Waveshare ESP32-C6-Touch-LCD-2.8"
+        help
+            240 x 320 ST7789 on SPI2 with no RAM offset.  Panel reset and
+            backlight PWM are reached through the on-board CH32V003 I/O
+            expander at I2C address 0x24 rather than through ESP32 GPIO.
+            There is no WS2812 status LED.  microSD on GPIO23, 16 MB flash.
+            A PCF85063A RTC and an SHTC3 temperature/humidity sensor share
+            the expander's I2C bus and are used when present.  The CST3530
+            touch panel is not used by AirTrack.
+
+endchoice
+
+endmenu

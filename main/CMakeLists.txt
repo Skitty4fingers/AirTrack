@@ -8,6 +8,7 @@ idf_component_register(
         config
         connectivity
         ota
+        sensors
         storage
         ui
         web

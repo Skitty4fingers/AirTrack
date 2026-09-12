@@ -1,0 +1,12 @@
+# 16 MB layout for the ESP32-C6-Touch-LCD-2.8.
+#
+# Offsets up to ota_0 match the 8 MB table so NVS, OTA data, and PHY
+# calibration live in the same place on every board. The app slots are larger
+# only because the flash allows it; the image budget is unchanged.
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x009000, 0x006000,
+otadata,    data, ota,     0x00F000, 0x002000,
+phy_init,   data, phy,     0x011000, 0x001000,
+ota_0,      app,  ota_0,   0x020000, 0x600000,
+ota_1,      app,  ota_1,   0x620000, 0x600000,
+coredump,   data, coredump,0xC20000, 0x040000,

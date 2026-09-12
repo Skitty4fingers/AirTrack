@@ -3,14 +3,10 @@
 #include <string.h>
 
 #include "board_internal.h"
+#include "board_profile.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
 #include "freertos/task.h"
-
-#define BOARD_SPI_HOST SPI2_HOST
-#define BOARD_PIN_SPI_MOSI 6
-#define BOARD_PIN_SPI_MISO 5
-#define BOARD_PIN_SPI_SCLK 7
 
 static const char *TAG = "board";
 
@@ -36,6 +32,9 @@ static void board_cleanup(void)
 
     board_internal_button_deinit();
     board_internal_backlight_deinit();
+#if BOARD_HAS_I2C_BUS
+    board_internal_i2c_deinit();
+#endif
 
     if (g_board_state.spi_gate != NULL) {
         vSemaphoreDelete(g_board_state.spi_gate);
@@ -72,6 +71,17 @@ esp_err_t board_init(const board_config_t *config)
     if (err != ESP_OK) {
         goto fail;
     }
+#if BOARD_HAS_I2C_BUS
+    /*
+     * The shared I2C bus comes up first: on boards with an I/O expander both
+     * the backlight and the panel reset line hang off it, so a bus failure is
+     * fatal rather than degraded like the SD card or the status LED.
+     */
+    err = board_internal_i2c_init();
+    if (err != ESP_OK) {
+        goto fail;
+    }
+#endif
     err = board_internal_backlight_init();
     if (err != ESP_OK) {
         goto fail;
@@ -113,6 +123,7 @@ esp_err_t board_init(const board_config_t *config)
         goto fail;
     }
 
+#if BOARD_HAS_RGB_LED
     if (effective.init_rgb) {
         g_board_state.rgb_init_attempted = true;
         g_board_state.rgb_init_result = board_internal_rgb_init();
@@ -121,6 +132,12 @@ esp_err_t board_init(const board_config_t *config)
                      esp_err_to_name(g_board_state.rgb_init_result));
         }
     }
+#else
+    /* This board has no status LED, which is not a fault worth warning about
+     * on every boot; board_rgb_* keeps reporting ESP_ERR_NOT_SUPPORTED. */
+    (void)effective.init_rgb;
+    g_board_state.rgb_init_result = ESP_ERR_NOT_SUPPORTED;
+#endif
 
     err = board_internal_backlight_set(effective.startup_brightness_percent);
     if (err != ESP_OK) {
@@ -129,8 +146,9 @@ esp_err_t board_init(const board_config_t *config)
 
     g_board_state.initialized = true;
     g_board_state.init_in_progress = false;
-    ESP_LOGI(TAG, "Board ready (LCD %ux%u, D0 parameters=%u, SD=%s, brightness=%u%%)",
-             BOARD_LCD_H_RES, BOARD_LCD_V_RES, g_board_state.st7789_d0_param_count,
+    ESP_LOGI(TAG, "%s ready (LCD %ux%u, D0 parameters=%u, SD=%s, brightness=%u%%)",
+             BOARD_NAME, BOARD_LCD_H_RES, BOARD_LCD_V_RES,
+             g_board_state.st7789_d0_param_count,
              g_board_state.sd_mounted ? "mounted" : "unavailable",
              g_board_state.brightness_percent);
     return ESP_OK;

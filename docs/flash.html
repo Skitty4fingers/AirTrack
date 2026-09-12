@@ -37,6 +37,11 @@
   .hash{font-size:.82rem;word-break:break-all;color:var(--muted)}
   details{margin-top:10px}summary{cursor:pointer;font-weight:600;color:var(--ink)}
   footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:8px}
+  .pick{display:flex;align-items:center;gap:10px;margin:16px 0 4px}
+  .pick label{font-weight:600}
+  .pick select{flex:1;min-width:0;padding:8px 10px;border-radius:8px;
+    border:1px solid rgba(128,128,128,.45);background:transparent;
+    color:inherit;font:inherit}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -46,11 +51,19 @@
 
   <div class="card">
     <h1>Install AirTrack on your device</h1>
-    <p class="lede">Plug a Waveshare ESP32-C6-LCD-1.47 into this computer with a USB-C data cable and press Install. The firmware is written straight from this page over USB &mdash; nothing to download, no toolchain, no command line.</p>
+    <p class="lede">Pick your board, plug it into this computer with a USB-C data cable, and press Install. The firmware is written straight from this page over USB &mdash; nothing to download, no toolchain, no command line.</p>
+
+    <div class="pick">
+      <label for="board">Board</label>
+      <select id="board">
+        <option value="esp32c6-lcd-1.47" selected>Waveshare ESP32-C6-LCD-1.47</option>
+        <option value="esp32c6-touch-lcd-2.8">Waveshare ESP32-C6-Touch-LCD-2.8</option>
+      </select>
+    </div>
 
     <div class="vers">
       <div class="ver"><span>Firmware</span><b id="ver">&mdash;</b><small id="released">reading the manifest&hellip;</small></div>
-      <div class="ver"><span>Hardware</span><b>ESP32-C6</b><small>Waveshare LCD 1.47&Prime; &middot; 8&nbsp;MB flash</small></div>
+      <div class="ver"><span>Hardware</span><b>ESP32-C6</b><small id="hw">Waveshare LCD 1.47&Prime; &middot; 8&nbsp;MB flash</small></div>
     </div>
 
     <div id="notesbox" hidden>
@@ -59,7 +72,7 @@
     </div>
 
     <div class="go">
-      <esp-web-install-button manifest="firmware/web-flash.json">
+      <esp-web-install-button id="installer" manifest="firmware/web-flash.json">
         <button slot="activate" class="btn"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7zM5 18v2h14v-2z"/></svg>Install AirTrack</button>
         <div slot="unsupported" class="warn bad">This browser cannot talk to USB devices. Use <b>Chrome</b>, <b>Edge</b>, or <b>Opera</b> on a desktop computer &mdash; Web Serial is not available in Firefox, Safari, or on phones and tablets. You can still install with <a href="https://github.com/Skitty4fingers/AirTrack#build-verify-and-flash">esptool</a>.</div>
         <div slot="not-allowed" class="warn bad">This page must be opened over HTTPS for the browser to allow USB access.</div>
@@ -113,7 +126,36 @@
   'use strict';
   function text(id, value) { var e = document.getElementById(id); if (e) e.textContent = value; }
 
-  fetch('firmware/web-flash.json', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (m) {
+  /*
+   * Each board publishes its own pair of manifests.  The 1.47 keeps the
+   * original unsuffixed names so links shared before the second board existed
+   * still resolve.
+   */
+  var BOARDS = {
+    'esp32c6-lcd-1.47': {
+      flash: 'firmware/web-flash.json',
+      ota: 'firmware/manifest.json',
+      hardware: 'Waveshare LCD 1.47\u2033 \u00b7 8\u00a0MB flash'
+    },
+    'esp32c6-touch-lcd-2.8': {
+      flash: 'firmware/web-flash-esp32c6-touch-lcd-2.8.json',
+      ota: 'firmware/manifest-esp32c6-touch-lcd-2.8.json',
+      hardware: 'Waveshare Touch LCD 2.8\u2033 \u00b7 16\u00a0MB flash'
+    }
+  };
+
+  function load(boardId) {
+   var board = BOARDS[boardId] || BOARDS['esp32c6-lcd-1.47'];
+   var installer = document.getElementById('installer');
+   if (installer) { installer.setAttribute('manifest', board.flash); }
+   text('hw', board.hardware);
+   text('ver', '\u2014');
+   text('hash', '\u2014');
+   text('released', 'reading the manifest\u2026');
+   var notesbox = document.getElementById('notesbox');
+   if (notesbox) { notesbox.hidden = true; }
+
+   fetch(board.flash, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (m) {
     text('ver', m.version || '—');
     text('hash', m.sha256 || '—');
     var part = m.builds && m.builds[0] && m.builds[0].parts && m.builds[0].parts[0];
@@ -123,7 +165,7 @@
       if (dl) { dl.href = 'firmware/' + part.path; dl.setAttribute('download', part.path); }
     }
     /* The OTA manifest carries the release date and notes for the same version. */
-    return fetch('firmware/manifest.json', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (o) {
+    return fetch(board.ota, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (o) {
       var size = m.size ? (Math.round(m.size / 1024 / 102.4) / 10) + ' MB' : '';
       if (o.version === m.version) {
         text('released', (o.released ? 'released ' + o.released : 'latest release') + (size ? ' · ' + size : ''));
@@ -135,9 +177,16 @@
         text('released', size || 'latest release');
       }
     });
-  }).catch(function () {
-    text('released', 'could not read the firmware manifest');
-  });
+   }).catch(function () {
+     text('released', 'no published build for this board yet');
+   });
+  }
+
+  var picker = document.getElementById('board');
+  if (picker) {
+    picker.addEventListener('change', function () { load(picker.value); });
+  }
+  load(picker ? picker.value : 'esp32c6-lcd-1.47');
 })();
 </script>
 </body>
