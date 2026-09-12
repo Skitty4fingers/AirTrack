@@ -1,16 +1,16 @@
 {
   "name": "AirTrack (esp32c6-lcd-1.47)",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
-  "sha256": "8a555b3b63b20f6933f918143a91ca28f653bf57252ac193e700b145a8476cf1",
-  "size": 1934992,
+  "sha256": "edcb791b88c3144790ffa5ae83b90f3931d82697eab71f5f290d2befaabcf06e",
+  "size": 1937872,
   "builds": [
     {
       "chipFamily": "ESP32-C6",
       "parts": [
         {
-          "path": "airtrack-1.7.0-factory.bin",
+          "path": "airtrack-1.8.0-factory.bin",
           "offset": 0
         }
       ]

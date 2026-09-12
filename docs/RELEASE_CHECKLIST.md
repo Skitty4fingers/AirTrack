@@ -16,20 +16,20 @@ published until that section passes.
   disabled and polling cannot exceed the public one-request-per-second limit.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
 - [x] Both images are below the 3.5 MiB gate:
-  - ESP32-C6-LCD-1.47: 1,803,920 bytes (55 percent of each 3,904 KiB slot free)
-  - ESP32-C6-Touch-LCD-2.8: 1,801,312 bytes (71 percent of each 6 MiB slot free)
+  - ESP32-C6-LCD-1.47: 1,806,800 bytes (55 percent of each 3,904 KiB slot free)
+  - ESP32-C6-Touch-LCD-2.8: 1,805,600 bytes (71 percent of each 6 MiB slot free)
 - [x] Artifact SHA-256:
-  - `67d9924216ebb44a805c004139546c9686d0e4789689cc113e7ac2acd0bd3a01`
-    (`airtrack-1.7.0.bin`)
-  - `4cd38769f3d30459eb4d913328516d241e39d94713080fa39d8787a004855f6e`
-    (`airtrack-esp32c6-touch-lcd-2.8-1.7.0.bin`)
+  - `eb2c944f65babdd86cb5d386ce04fca158dc027006d2f2891812708e9ce42886`
+    (`airtrack-1.8.0.bin`)
+  - `c6965989456b9337d596b77a9a03f7a262ce63ff93865c00e737ffbaaa4d709a`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.8.0.bin`)
 - [x] Browser-install factory image SHA-256 (bootloader + partition table +
   otadata + app merged at offset 0, byte-identical to the four release
   binaries):
-  - `8a555b3b63b20f6933f918143a91ca28f653bf57252ac193e700b145a8476cf1`
-    (`airtrack-1.7.0-factory.bin`)
-  - `09f17e5ff05aaea1938116ebd5f01daa728a0a44a5964713b940fe953c9b1ec8`
-    (`airtrack-esp32c6-touch-lcd-2.8-1.7.0-factory.bin`)
+  - `edcb791b88c3144790ffa5ae83b90f3931d82697eab71f5f290d2befaabcf06e`
+    (`airtrack-1.8.0-factory.bin`)
+  - `59f9b4580d35f3e9a64522cd75063d377885e7de164654b07ff27661faf661bf`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.8.0-factory.bin`)
 - [x] Published release assets verified against their manifests after upload:
   size and SHA-256 of both boards re-downloaded from the GitHub Release and
   compared to the committed manifest values.
