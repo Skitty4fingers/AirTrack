@@ -49,9 +49,9 @@ case "$board" in
         ;;
 esac
 
-if ! grep -q 'project(airtrack VERSION 1\.6\.3)' \
+if ! grep -q 'project(airtrack VERSION 1\.7\.0)' \
     "${project_dir}/CMakeLists.txt"; then
-    echo "release check: project version is not 1.6.3" >&2
+    echo "release check: project version is not 1.7.0" >&2
     exit 1
 fi
 

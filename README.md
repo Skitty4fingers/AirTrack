@@ -114,9 +114,9 @@ development, and the fallback when no Web Serial browser is available.
 
 ## Firmware status
 
-The current release is AirTrack 1.6.3.
+The current release is AirTrack 1.7.0.
 
-Unreleased:
+Changes in 1.7.0:
 
 - Support for the Waveshare ESP32-C6-Touch-LCD-2.8 (240 x 320, 16 MB)
   alongside the 1.47. One Kconfig choice selects the board; the panel,
@@ -127,6 +127,10 @@ Unreleased:
   `/api/v1/status`. Releases, manifests, and factory images are now per board,
   and the firmware refuses a manifest that names different hardware. The touch
   panel is not used. See [the board notes](docs/BOARDS.md).
+- Fixed on both boards: a hardware status value too wide for its row on
+  the bring-up screen wrapped onto a clipped second line instead of
+  being shortened with an ellipsis. Visible on any unit with no SD card
+  inserted.
 
 Changes in 1.6.x:
 
