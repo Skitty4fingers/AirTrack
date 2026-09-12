@@ -38,6 +38,17 @@
 #define UI_DESIGN_WIDTH 172
 #define UI_WIDE_PAD (((int32_t)BOARD_LCD_H_RES - UI_DESIGN_WIDTH) / 2)
 
+/*
+ * The diagnostic screen is a stack of full-width rows rather than a composed
+ * layout, so it simply grows with the panel: content is inset 12 px a side,
+ * footer text 10 px.  Both evaluate to the original 148 and 152 at the design
+ * width.
+ */
+#define UI_CONTENT_X 12
+#define UI_CONTENT_WIDTH ((int32_t)BOARD_LCD_H_RES - (2 * UI_CONTENT_X))
+#define UI_FOOTER_X 10
+#define UI_FOOTER_WIDTH ((int32_t)BOARD_LCD_H_RES - (2 * UI_FOOTER_X))
+
 #define UI_COLOR_BG 0x07111F
 #define UI_COLOR_PANEL 0x0D1A2B
 #define UI_COLOR_TEXT 0xF2F6FC
@@ -372,17 +383,29 @@ static lv_obj_t *create_label(lv_obj_t *parent, const char *text, int32_t x,
 static void create_status_row(lv_obj_t *screen, const char *name, int32_t y,
                               lv_obj_t **value)
 {
+    /* The name column is fixed; the value takes whatever the panel leaves. */
+    const int32_t row_width = UI_CONTENT_WIDTH;
+    const int32_t value_x = 69;
+    const int32_t value_width = row_width - value_x - 8;
+
     lv_obj_t *line = lv_obj_create(screen);
     lv_obj_remove_style_all(line);
-    lv_obj_set_size(line, 148, 34);
-    lv_obj_set_pos(line, 12, y);
+    lv_obj_set_size(line, row_width, 34);
+    lv_obj_set_pos(line, UI_CONTENT_X, y);
     lv_obj_set_style_bg_color(line, lv_color_hex(0x121E31), 0);
     lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(line, 5, 0);
 
     create_label(line, name, 8, 9, 58, lv_color_hex(0xA7B5CA));
-    *value = create_label(line, "CHECKING", 69, 9, 71,
+    *value = create_label(line, "CHECKING", value_x, 9, value_width,
                           result_color(UI_DIAGNOSTIC_PENDING));
+    /*
+     * Hold the value to one line.  create_label() leaves the height on
+     * content, and LV_LABEL_LONG_DOT only ellipsizes once the text runs out of
+     * height, so an unbounded label wraps a long value such as
+     * "16MB OPTIONAL" onto a second line that the row then clips.
+     */
+    lv_obj_set_height(*value, lv_font_get_line_height(&lv_font_montserrat_14));
     lv_obj_set_style_text_align(*value, LV_TEXT_ALIGN_RIGHT, 0);
 }
 
@@ -568,13 +591,15 @@ static void create_screen(void)
     lv_obj_set_style_bg_color(header, lv_color_hex(0x0D1A2B), 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
     create_label(header, "AIRTRACK", 10, 8, 86, lv_color_hex(0x55D9F3));
-    lv_obj_t *mode = create_label(header, "HW", 97, 8, 65,
+    lv_obj_t *mode = create_label(header, "HW", 97, 8,
+                                  (int32_t)BOARD_LCD_H_RES - 10 - 97,
                                   lv_color_hex(0x8BE36D));
     lv_obj_set_style_text_align(mode, LV_TEXT_ALIGN_RIGHT, 0);
 
-    create_label(s_ui.screen, "SYSTEM BRING-UP", 12, 43, 148,
-                 lv_color_hex(0x6F819B));
-    s_ui.phase = create_label(s_ui.screen, "Starting hardware...", 12, 64, 148,
+    create_label(s_ui.screen, "SYSTEM BRING-UP", UI_CONTENT_X, 43,
+                 UI_CONTENT_WIDTH, lv_color_hex(0x6F819B));
+    s_ui.phase = create_label(s_ui.screen, "Starting hardware...",
+                              UI_CONTENT_X, 64, UI_CONTENT_WIDTH,
                               lv_color_hex(0xF2F6FC));
 
     create_status_row(s_ui.screen, "LCD", 94, &s_ui.lcd_value);
@@ -587,12 +612,13 @@ static void create_screen(void)
     lv_obj_set_pos(footer, 0, 226);
     lv_obj_set_style_bg_color(footer, lv_color_hex(0x0D1A2B), 0);
     lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
-    create_label(footer, "NETWORK", 10, 9, 152, lv_color_hex(0x6F819B));
-    s_ui.ssid = create_label(footer, "SSID: --", 10, 31, 152,
-                             lv_color_hex(0xDDE7F4));
-    s_ui.ip = create_label(footer, "IP: --", 10, 51, 152,
+    create_label(footer, "NETWORK", UI_FOOTER_X, 9, UI_FOOTER_WIDTH,
+                 lv_color_hex(0x6F819B));
+    s_ui.ssid = create_label(footer, "SSID: --", UI_FOOTER_X, 31,
+                             UI_FOOTER_WIDTH, lv_color_hex(0xDDE7F4));
+    s_ui.ip = create_label(footer, "IP: --", UI_FOOTER_X, 51, UI_FOOTER_WIDTH,
                            lv_color_hex(0xDDE7F4));
-    create_label(footer, "Data: adsb.fi", 10, 72, 152,
+    create_label(footer, "Data: adsb.fi", UI_FOOTER_X, 72, UI_FOOTER_WIDTH,
                  lv_color_hex(0x55D9F3));
 
     lv_screen_load(s_ui.screen);
