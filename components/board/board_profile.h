@@ -29,6 +29,8 @@
 /* The 172-pixel panel sits in a 240-pixel controller window. */
 #define BOARD_LCD_MIRROR_X true
 #define BOARD_LCD_MIRROR_Y false
+/* This panel is wired blue-green-red. */
+#define BOARD_LCD_RGB_ELEMENT_ORDER LCD_RGB_ELEMENT_ORDER_BGR
 
 #elif defined(CONFIG_AIRTRACK_BOARD_TOUCH_LCD_2_8)
 
@@ -62,6 +64,14 @@
 #define BOARD_LCD_PIXEL_CLOCK_HZ (40U * 1000U * 1000U)
 #define BOARD_LCD_MIRROR_X false
 #define BOARD_LCD_MIRROR_Y false
+/*
+ * This panel is wired red-green-blue, matching the MADCTL 0x00 the vendor
+ * sequence writes.  The order has to be declared here rather than left to the
+ * init table, because esp_lcd_panel_mirror() rewrites MADCTL from the value
+ * it derived from this field and would otherwise put the BGR bit back and
+ * swap red with blue.
+ */
+#define BOARD_LCD_RGB_ELEMENT_ORDER LCD_RGB_ELEMENT_ORDER_RGB
 
 /* CH32V003 I/O expander channel assignments (Waveshare Board_IO reference). */
 #define BOARD_EXIO_TOUCH_RESET 0

@@ -191,7 +191,7 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
     const esp_lcd_panel_dev_config_t panel_config = {
         /* -1 where the reset line belongs to the I/O expander instead. */
         .reset_gpio_num = BOARD_PIN_LCD_RESET,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+        .rgb_ele_order = BOARD_LCD_RGB_ELEMENT_ORDER,
         .data_endian = LCD_RGB_DATA_ENDIAN_BIG,
         .bits_per_pixel = 16,
         .flags.reset_active_high = false,
@@ -239,9 +239,11 @@ esp_err_t board_internal_lcd_init(uint8_t d0_param_count)
     }
 
     g_board_state.lcd_ready = true;
-    ESP_LOGI(TAG, "ST7789 %ux%u ready at %lu MHz, BGR, mirror=(%d,%d), gap=(%u,%u)",
+    ESP_LOGI(TAG, "ST7789 %ux%u ready at %lu MHz, %s, mirror=(%d,%d), gap=(%u,%u)",
              BOARD_LCD_H_RES, BOARD_LCD_V_RES,
              (unsigned long)(BOARD_LCD_PIXEL_CLOCK_HZ / 1000000U),
+             BOARD_LCD_RGB_ELEMENT_ORDER == LCD_RGB_ELEMENT_ORDER_BGR
+                 ? "BGR" : "RGB",
              (int)BOARD_LCD_MIRROR_X, (int)BOARD_LCD_MIRROR_Y,
              BOARD_LCD_X_GAP, BOARD_LCD_Y_GAP);
 
