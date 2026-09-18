@@ -15,6 +15,10 @@
 /* Pull the unit under test in directly so static helpers are reachable. */
 #include "../../components/ui/ui_diagnostic.c"
 
+/* The Alaska logo tile as the device decodes it (32x32 RGB565 on the LCD
+ * background), shared with the host tests. */
+#include "../../test/host/logo_fixture.h"
+
 static uint16_t s_frame[BOARD_LCD_H_RES * BOARD_LCD_V_RES];
 static int64_t s_now_us;
 
@@ -141,22 +145,79 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/02b_route.ppm", out_dir);
     render_and_save(path);
 
-    /* Focused on one flight (different aircraft, far along its route). */
-    strcpy(settings.focus_flight, "UAL205");
-    strcpy(a->hex, "A2C1F0"); strcpy(a->callsign, "UAL205"); strcpy(a->registration, "N37267");
-    strcpy(a->aircraft_type, "B738"); a->altitude_ft = 36000; a->vertical_rate_fpm = 0;
-    a->ground_speed_kt = 452.0f; a->track_deg = 96.0f; a->distance_nm = 12.4f; a->bearing_deg = 118.0f;
-    strcpy(a->route_from, "SEA"); strcpy(a->route_to, "ORD");
-    a->destination_latitude = 41.9742; a->destination_longitude = -87.9073;
+    /* Following one flight: ASA555 Minneapolis to Seattle, over Montana,
+     * with adsbdb route, Flystack schedule (departed 12 min late), and the
+     * airline logo. */
+    setenv("TZ", "PST8PDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    const int64_t now = (int64_t)time(NULL);
+    strcpy(settings.focus_flight, "ASA555");
+    settings.distance_unit = AIRTRACK_DISTANCE_MI;
+    static flight_info_t flight;
+    memset(&flight, 0, sizeof(flight));
+    strcpy(flight.code, "ASA555");
+    flight.route.valid = true;
+    strcpy(flight.route.callsign_icao, "ASA555"); strcpy(flight.route.callsign_iata, "AS555");
+    strcpy(flight.route.airline_name, "Alaska Airlines"); strcpy(flight.route.airline_iata, "AS");
+    strcpy(flight.route.origin, "MSP"); strcpy(flight.route.destination, "SEA");
+    flight.schedule_state = FLIGHT_SCHEDULE_OK;
+    strcpy(flight.schedule.status, "en-route");
+    flight.schedule.dep_time = now - 2 * 3600 - 12 * 60; flight.schedule.dep_delay_min = 12;
+    flight.schedule.arr_time = now + 70 * 60; flight.schedule.arr_delay_min = 9;
+    strcpy(flight.schedule.dep_gate, "C14"); strcpy(flight.schedule.arr_gate, "N9");
+    strcpy(flight.schedule.aircraft_icao, "B739");
+    flight.was_airborne = true; flight.phase = AIRTRACK_PHASE_CRUISE; flight.logo_valid = true;
+    state.flight = &flight;
+    state.logo = LOGO_AS_EXPECTED_32; state.logo_generation = 1U;
+    strcpy(a->hex, "A7E151"); strcpy(a->callsign, "ASA555"); strcpy(a->registration, "N607AS");
+    strcpy(a->aircraft_type, "B739"); a->altitude_valid = true; a->altitude_ft = 36000;
+    a->vertical_rate_fpm = 0; a->ground_speed_kt = 468.0f; a->track_deg = 281.0f;
+    a->latitude = 46.95; a->longitude = -110.2; a->distance_nm = 486.0f; a->bearing_deg = 97.0f;
+    a->route_valid = true; strcpy(a->route_from, "MSP"); strcpy(a->route_to, "SEA");
+    a->origin_valid = true; a->origin_latitude = 44.882; a->origin_longitude = -93.2218;
+    a->destination_valid = true; a->destination_latitude = 47.449; a->destination_longitude = -122.309;
+    a->route_confirmed = true; flight.route_confirmed = true;
+    strcpy(a->description, "Boeing 737-900");
+    a->seen_pos_s = 0.4f; snap.last_success_monotonic_ms = 51000; s_now_us = 51000 * 1000;
     ui_diagnostic_show_tracking(&state);
-    snprintf(path, sizeof(path), "%s/02c_focus.ppm", out_dir);
+    snprintf(path, sizeof(path), "%s/02c_focus_cruise.ppm", out_dir);
     render_and_save(path);
+
+    /* Before departure: nothing reported yet, schedule known. */
+    flight.was_airborne = false; flight.phase = AIRTRACK_PHASE_UNKNOWN;
+    strcpy(flight.schedule.status, "scheduled");
+    flight.schedule.dep_time = now + 50 * 60; flight.schedule.dep_delay_min = 0;
+    flight.schedule.arr_time = now + 50 * 60 + 4 * 3600; flight.schedule.arr_delay_min = 0;
     snap.aircraft_count = 0; snap.state = AIRTRACK_FEED_EMPTY;
     ui_diagnostic_show_tracking(&state);
     snprintf(path, sizeof(path), "%s/02d_focus_wait.ppm", out_dir);
     render_and_save(path);
+
+    /* On approach to Seattle, no Flystack key (adsbdb only). */
+    snap.aircraft_count = 1; snap.state = AIRTRACK_FEED_LIVE;
+    flight.schedule_state = FLIGHT_SCHEDULE_NO_KEY;
+    flight.was_airborne = true; flight.phase = AIRTRACK_PHASE_APPROACH;
+    a->altitude_ft = 6400; a->vertical_rate_fpm = -1100; a->ground_speed_kt = 214.0f;
+    a->latitude = 47.72; a->longitude = -122.05; a->distance_nm = 22.0f; a->bearing_deg = 331.0f;
+    ui_diagnostic_show_tracking(&state);
+    snprintf(path, sizeof(path), "%s/02e_focus_approach.ppm", out_dir);
+    render_and_save(path);
+
+    /* Landed; the transponder went quiet 8 minutes ago. */
+    flight.phase = AIRTRACK_PHASE_LANDED;
+    a->ground = true; a->altitude_valid = false; a->vertical_rate_valid = false;
+    a->ground_speed_kt = 0.0f; a->latitude = 47.449; a->longitude = -122.309;
+    a->distance_nm = 26.0f; a->bearing_deg = 283.0f; a->seen_pos_s = 480.0f;
+    ui_diagnostic_show_tracking(&state);
+    snprintf(path, sizeof(path), "%s/02f_focus_landed.ppm", out_dir);
+    render_and_save(path);
+
+    state.flight = NULL; state.logo = NULL;
+    a->ground = false; a->altitude_valid = true; a->vertical_rate_valid = true; a->seen_pos_s = 0.3f;
+    settings.distance_unit = AIRTRACK_DISTANCE_NM;
     snap.aircraft_count = 1; snap.state = AIRTRACK_FEED_LIVE;
     settings.focus_flight[0] = 0; a->route_valid = false; a->destination_valid = false;
+    a->origin_valid = false; a->route_confirmed = false; a->description[0] = 0;
     /* restore the GA-style example for the remaining scenarios */
     strcpy(a->hex, "A280A4"); strcpy(a->callsign, "SKW4017"); strcpy(a->registration, "N260SY");
     strcpy(a->aircraft_type, "E75L"); a->altitude_ft = 18325; a->vertical_rate_fpm = 1792;

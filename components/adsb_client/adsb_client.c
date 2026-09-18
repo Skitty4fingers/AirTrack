@@ -1,5 +1,6 @@
 #include "adsb_client.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,9 @@
 #define ROUTE_HTTP_TIMEOUT_MS 8000
 #define ROUTE_RETRY_UNKNOWN_MS (60LL * 60LL * 1000LL)
 #define ROUTE_RETRY_FAILED_MS (5LL * 60LL * 1000LL)
+/* A followed flight that stops reporting (coverage gap, or transponder off
+ * after landing) stays on screen with its growing age for this long. */
+#define FOCUS_HOLD_S 1800.0f
 
 static const char *TAG = "adsb_client";
 
@@ -54,7 +58,24 @@ typedef struct {
     uint32_t polls_ok;
     uint32_t polls_failed;
     uint32_t connections;
+    adsb_client_hook_t hook;
+    void *hook_context;
 } adsb_context_t;
+
+/*
+ * Identity lookup for a followed flight, owned by the worker task.  The
+ * focus text is tried as each plausible identity in turn until one answers;
+ * after that the same lookup is kept until the focus changes.
+ */
+typedef struct {
+    char focus[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
+    airtrack_focus_kind_t order[AIRTRACK_FOCUS_KINDS_MAX];
+    size_t count;
+    size_t index;
+    bool resolved;
+} focus_lookup_t;
+
+static focus_lookup_t s_focus;
 
 static adsb_context_t s_client;
 
@@ -73,8 +94,20 @@ typedef struct {
     bool destination_valid;
     double destination_latitude;
     double destination_longitude;
+    bool origin_valid;
+    double origin_latitude;
+    double origin_longitude;
+    char airline_iata[3];
     int64_t fetched_ms;
+    /* Direction ADS-B has shown this callsign flying the route: +1 as
+     * adsbdb lists it, -1 reversed, 0 not yet seen. */
+    int8_t orientation;
+    int64_t oriented_ms;
 } route_entry_t;
+
+/* A direction seen once holds for the rest of the day's leg; evidence
+ * against it (two polls running) flips it sooner. */
+#define ROUTE_ORIENTATION_HOLD_MS (12LL * 60LL * 60LL * 1000LL)
 
 static route_entry_t s_routes[ROUTE_CACHE_ENTRIES];
 
@@ -261,6 +294,12 @@ static esp_err_t ensure_http_client(const char *url, bool *fresh)
     if (s_http != NULL && strcmp(url, s_http_url) == 0) {
         return ESP_OK;
     }
+    /* Every poll URL is on the same host, so a new path (a moved location,
+     * or the next identity lookup for a followed flight) keeps the session. */
+    if (s_http != NULL && esp_http_client_set_url(s_http, url) == ESP_OK) {
+        (void)snprintf(s_http_url, sizeof(s_http_url), "%s", url);
+        return ESP_OK;
+    }
     drop_http_client();
 
     const esp_http_client_config_t config = {
@@ -296,12 +335,22 @@ static esp_err_t perform_poll(const airtrack_settings_t *settings,
     *http_status = 0;
     *reused = false;
     char url[URL_MAX_BYTES];
-    const int url_length = snprintf(
-        url, sizeof(url),
-        "https://opendata.adsb.fi/api/v3/lat/%.6f/lon/%.6f/dist/%u",
-        (double)settings->latitude_e7 / 10000000.0,
-        (double)settings->longitude_e7 / 10000000.0,
-        (unsigned)settings->radius_nm);
+    int url_length;
+    if (settings->focus_flight[0] != '\0' && s_focus.count > 0U) {
+        /* The focus text is validated to [A-Z0-9-] with an optional leading
+         * '~', all of which are safe in a URL path. */
+        url_length = snprintf(url, sizeof(url),
+                              "https://opendata.adsb.fi/api/v2/%s/%s",
+                              airtrack_focus_kind_path(s_focus.order[s_focus.index]),
+                              settings->focus_flight);
+    } else {
+        url_length = snprintf(
+            url, sizeof(url),
+            "https://opendata.adsb.fi/api/v3/lat/%.6f/lon/%.6f/dist/%u",
+            (double)settings->latitude_e7 / 10000000.0,
+            (double)settings->longitude_e7 / 10000000.0,
+            (unsigned)settings->radius_nm);
+    }
     if (url_length < 0 || (size_t)url_length >= sizeof(url)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -395,6 +444,21 @@ static bool copy_airport_code(const cJSON *airport, char out[5])
     return used >= 3U;
 }
 
+static bool airport_position(const cJSON *airport, double *latitude,
+                             double *longitude)
+{
+    const cJSON *lat = cJSON_GetObjectItemCaseSensitive(airport, "latitude");
+    const cJSON *lon = cJSON_GetObjectItemCaseSensitive(airport, "longitude");
+    if (!cJSON_IsNumber(lat) || !cJSON_IsNumber(lon) ||
+        lat->valuedouble < -90.0 || lat->valuedouble > 90.0 ||
+        lon->valuedouble < -180.0 || lon->valuedouble > 180.0) {
+        return false;
+    }
+    *latitude = lat->valuedouble;
+    *longitude = lon->valuedouble;
+    return true;
+}
+
 static bool callsign_url_safe(const char *callsign)
 {
     const size_t length = strnlen(callsign, 9U);
@@ -420,6 +484,8 @@ static void route_lookup(route_entry_t *entry)
     entry->from[0] = '\0';
     entry->to[0] = '\0';
     entry->destination_valid = false;
+    entry->origin_valid = false;
+    entry->airline_iata[0] = '\0';
     if (!callsign_url_safe(entry->callsign)) {
         entry->failed = false; /* never valid; treat as unknown */
         return;
@@ -472,17 +538,23 @@ static void route_lookup(route_entry_t *entry)
                 memcpy(entry->from, from, sizeof(from));
                 memcpy(entry->to, to, sizeof(to));
                 entry->known = true;
-                const cJSON *latitude =
-                    cJSON_GetObjectItemCaseSensitive(destination, "latitude");
-                const cJSON *longitude =
-                    cJSON_GetObjectItemCaseSensitive(destination, "longitude");
-                if (cJSON_IsNumber(latitude) && cJSON_IsNumber(longitude) &&
-                    latitude->valuedouble >= -90.0 && latitude->valuedouble <= 90.0 &&
-                    longitude->valuedouble >= -180.0 &&
-                    longitude->valuedouble <= 180.0) {
-                    entry->destination_valid = true;
-                    entry->destination_latitude = latitude->valuedouble;
-                    entry->destination_longitude = longitude->valuedouble;
+                entry->destination_valid = airport_position(
+                    destination, &entry->destination_latitude,
+                    &entry->destination_longitude);
+                entry->origin_valid = airport_position(
+                    origin, &entry->origin_latitude, &entry->origin_longitude);
+                const cJSON *airline =
+                    cJSON_GetObjectItemCaseSensitive(route, "airline");
+                const cJSON *iata = cJSON_GetObjectItemCaseSensitive(airline, "iata");
+                if (cJSON_IsString(iata) && iata->valuestring != NULL &&
+                    strlen(iata->valuestring) == 2U &&
+                    isalnum((unsigned char)iata->valuestring[0]) &&
+                    isalnum((unsigned char)iata->valuestring[1])) {
+                    entry->airline_iata[0] =
+                        (char)toupper((unsigned char)iata->valuestring[0]);
+                    entry->airline_iata[1] =
+                        (char)toupper((unsigned char)iata->valuestring[1]);
+                    entry->airline_iata[2] = '\0';
                 }
             }
         }
@@ -534,6 +606,87 @@ static void apply_route(airtrack_aircraft_t *aircraft, const route_entry_t *entr
         aircraft->destination_valid = entry->destination_valid;
         aircraft->destination_latitude = entry->destination_latitude;
         aircraft->destination_longitude = entry->destination_longitude;
+        aircraft->origin_valid = entry->origin_valid;
+        aircraft->origin_latitude = entry->origin_latitude;
+        aircraft->origin_longitude = entry->origin_longitude;
+        memcpy(aircraft->airline_iata, entry->airline_iata,
+               sizeof(aircraft->airline_iata));
+    }
+}
+
+/*
+ * adsbdb gives a callsign's usual route, and out-and-back flight numbers
+ * share one entry, so its order may be backwards for today's leg.  Settle
+ * the direction from what ADS-B shows and put the aircraft's route in that
+ * order; without evidence yet (at the gate) the database order stands,
+ * unconfirmed.
+ */
+static void orient_route(airtrack_aircraft_t *aircraft, route_entry_t *entry, int64_t now)
+{
+    if (!entry->known) {
+        return;
+    }
+    const int evidence = airtrack_route_evidence(aircraft);
+    if (evidence != 0) {
+        if (entry->orientation == 0 || evidence == entry->orientation) {
+            entry->orientation = (int8_t)evidence;
+            entry->oriented_ms = now;
+        } else if (now - entry->oriented_ms > 30LL * 1000LL) {
+            /* Contrary evidence that persists: a new leg the other way. */
+            entry->orientation = (int8_t)evidence;
+            entry->oriented_ms = now;
+        }
+    }
+    if (entry->orientation != 0 && now - entry->oriented_ms > ROUTE_ORIENTATION_HOLD_MS) {
+        entry->orientation = 0;
+    }
+    if (entry->orientation < 0) {
+        airtrack_route_reverse(aircraft);
+    }
+    aircraft->route_confirmed = entry->orientation != 0;
+}
+
+/* Reset the identity rotation when the followed flight changes. */
+static void focus_sync(const airtrack_settings_t *settings)
+{
+    if (strcmp(s_focus.focus, settings->focus_flight) == 0) {
+        return;
+    }
+    memset(&s_focus, 0, sizeof(s_focus));
+    memcpy(s_focus.focus, settings->focus_flight, sizeof(s_focus.focus));
+    s_focus.count = airtrack_focus_lookup_order(settings->focus_flight,
+                                                s_focus.order);
+}
+
+/*
+ * Settle a followed flight's poll.  A hit pins the lookup kind.  A miss
+ * either keeps showing the last position (with its true, growing age) while
+ * it is recent, or moves on to the next plausible identity lookup.
+ */
+static void focus_after_poll(const airtrack_snapshot_t *previous,
+                             airtrack_snapshot_t *candidate)
+{
+    if (candidate->aircraft_count > 0U) {
+        s_focus.resolved = true;
+        return;
+    }
+    if (previous->aircraft_count > 0U &&
+        airtrack_aircraft_matches(&previous->aircraft[0], s_focus.focus) &&
+        previous->last_success_monotonic_ms > 0) {
+        const float elapsed_s =
+            (float)(monotonic_ms() - previous->last_success_monotonic_ms) / 1000.0f;
+        const float age = previous->aircraft[0].seen_pos_s +
+                          (elapsed_s > 0.0f ? elapsed_s : 0.0f);
+        if (age <= FOCUS_HOLD_S) {
+            candidate->aircraft[0] = previous->aircraft[0];
+            candidate->aircraft[0].seen_pos_s = age;
+            candidate->aircraft_count = 1U;
+            candidate->state = AIRTRACK_FEED_LIVE;
+            return;
+        }
+    }
+    if (!s_focus.resolved && s_focus.count > 1U) {
+        s_focus.index = (s_focus.index + 1U) % s_focus.count;
     }
 }
 
@@ -558,6 +711,7 @@ static airtrack_aircraft_t *enrich_from_cache(airtrack_snapshot_t *snapshot)
                                                  : false;
             if (!expired) {
                 apply_route(aircraft, entry);
+                orient_route(aircraft, entry, now);
                 continue;
             }
         }
@@ -608,6 +762,7 @@ static void worker(void *argument)
         }
 
         publish_searching_on_transition();
+        focus_sync(&settings);
 
         airtrack_snapshot_t candidate;
         int http_status = 0;
@@ -649,6 +804,9 @@ static void worker(void *argument)
             candidate.updated_monotonic_ms = monotonic_ms();
             candidate.last_success_monotonic_ms = candidate.updated_monotonic_ms;
             candidate.error = AIRTRACK_ERROR_NONE;
+            if (settings.focus_flight[0] != '\0') {
+                focus_after_poll(&previous, &candidate);
+            }
             airtrack_apply_target_hysteresis(&previous, &candidate,
                                              s_client.pending_hex,
                                              &s_client.pending_polls);
@@ -711,6 +869,19 @@ static void worker(void *argument)
                     failure_backoff_s = MAX_NORMAL_BACKOFF_S;
                 }
             }
+        }
+        /* Further enrichment runs here, after the poll is published, so its
+         * requests never overlap this worker's own TLS traffic. */
+        xSemaphoreTake(s_client.lock, portMAX_DELAY);
+        const adsb_client_hook_t hook = s_client.hook;
+        void *const hook_context = s_client.hook_context;
+        xSemaphoreGive(s_client.lock);
+        if (hook != NULL) {
+            /* Static rather than on this stack, which TLS handshakes in the
+             * hook need; only this task touches it. */
+            static airtrack_snapshot_t published;
+            published = current_snapshot();
+            hook(&settings, &published, hook_context);
         }
         const uint32_t wait_s = retry_after_s > 0U
                                     ? next_delay_s
@@ -811,6 +982,31 @@ esp_err_t adsb_client_update_settings(const airtrack_settings_t *settings)
         xTaskNotifyGive(task);
     }
     return ESP_OK;
+}
+
+esp_err_t adsb_client_set_hook(adsb_client_hook_t hook, void *context)
+{
+    if (s_client.lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_client.lock, portMAX_DELAY);
+    s_client.hook = hook;
+    s_client.hook_context = context;
+    xSemaphoreGive(s_client.lock);
+    return ESP_OK;
+}
+
+void adsb_client_wake(void)
+{
+    if (s_client.lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_client.lock, portMAX_DELAY);
+    const TaskHandle_t task = s_client.running ? s_client.task : NULL;
+    xSemaphoreGive(s_client.lock);
+    if (task != NULL) {
+        xTaskNotifyGive(task);
+    }
 }
 
 esp_err_t adsb_client_get_snapshot(airtrack_snapshot_t *snapshot)

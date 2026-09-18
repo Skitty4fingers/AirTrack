@@ -197,8 +197,19 @@ Expected differences, to confirm rather than treat as faults:
   the panel dims and the LED goes dark; restore the real window afterwards.
 - [ ] Confirm the accessory LED is blue while tracking and orange in setup or
   when the feed is stale/offline.
-- [ ] Set *Track a single flight* to a nearby airliner callsign and confirm the
-  LCD switches to `WAITING FOR` / the focused view with route and ETA.
+- [ ] 1.9.0: set *Track a single flight* to an airliner more than 250 NM away
+  and confirm it appears (identity lookup, no radius), with the airline logo
+  on the LCD, route progress, and distance to go; then follow one through
+  landing and confirm `LANDED` is held with a growing age.
+- [ ] 1.9.0: follow a registration (`N…`) and an ICAO hex and confirm the log
+  shows the identity lookup settling on `registration` / `hex`.
+- [ ] 1.9.0: with a Flystack key saved, confirm one lookup when the flight is
+  chosen (zero if **Check** already fetched it), the dashboard's requests-left
+  figure, and that a refused key (401/403) shows its note without retrying
+  more than every six hours.
+- [ ] 1.9.0: watch free heap and the minimum while a logo is fetched and
+  decoded and a Flystack lookup runs; neither may run alongside a second TLS
+  session.
 - [ ] Power the router off for more than 60 seconds and confirm the recovery
   setup screen appears, then that tracking resumes by itself once the router
   is back (no power cycle).

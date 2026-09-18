@@ -2,7 +2,9 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "board.h"
 #include "esp_log.h"
@@ -25,6 +27,7 @@
 #define UI_WIFI_QR_PAYLOAD_BYTES 224U
 #define UI_RADAR_SWEEP_MS 6000U
 #define UI_STALE_AGE_S 30.0
+#define UI_FOCUS_ROWS 5U
 
 /*
  * The screens are laid out against a 172-pixel design width, which is the
@@ -144,6 +147,25 @@ typedef struct {
     lv_obj_t *trk_empty_hint;
     lv_obj_t *trk_footer_net;
     lv_obj_t *trk_footer_data;
+    /* Followed-flight view, shown instead of both blocks above. */
+    lv_obj_t *trk_focus;
+    lv_obj_t *fcs_logo;
+    lv_obj_t *fcs_ident;
+    lv_obj_t *fcs_meta;
+    lv_obj_t *fcs_from;
+    lv_obj_t *fcs_to;
+    lv_obj_t *fcs_mid;
+    lv_obj_t *fcs_track;
+    lv_obj_t *fcs_fill;
+    lv_obj_t *fcs_plane;
+    lv_obj_t *fcs_dep;
+    lv_obj_t *fcs_arr;
+    lv_obj_t *fcs_phase;
+    lv_obj_t *fcs_divider;
+    lv_obj_t *fcs_row_icon[UI_FOCUS_ROWS];
+    lv_obj_t *fcs_row_text[UI_FOCUS_ROWS];
+    uint32_t logo_generation;
+    bool logo_shown;
     /* Update screen widgets. */
     bool updating_visible;
     lv_obj_t *upd_version;
@@ -1317,6 +1339,140 @@ static void set_radar_animation(bool enabled)
     lv_anim_start(&anim);
 }
 
+/*
+ * Followed-flight layout (y relative to the content group under the header):
+ *
+ *     [logo] CALLSIGN          4   airline or type, registration   40
+ *     MSP   1,204 mi to go   SEA    58   codes and distance to go
+ *     ===========>-----------        88   route progress with the plane
+ *     DEP 14:05         ARR 17:22  102   times, amber when late
+ *            CRUISING              122   phase
+ *     rows: altitude, speed/ETA, position, gates or airframe, age  152..
+ */
+#define UI_FOCUS_LOGO_Y 4
+#define UI_FOCUS_META_Y 40
+#define UI_FOCUS_ROUTE_Y 58
+#define UI_FOCUS_BAR_Y 88
+#define UI_FOCUS_BAR_X 14
+#define UI_FOCUS_BAR_W ((int32_t)BOARD_LCD_H_RES - (2 * UI_FOCUS_BAR_X))
+#define UI_FOCUS_TIMES_Y 102
+#define UI_FOCUS_PHASE_Y 122
+#define UI_FOCUS_DIVIDER_Y 146
+#define UI_FOCUS_ROW_Y 152
+#define UI_FOCUS_ROW_STEP 24
+/* Panels wider than the 172-pixel design have room for fuller wording. */
+#define UI_FOCUS_WIDE (BOARD_LCD_H_RES >= 200)
+
+static uint16_t s_logo_pixels[FLIGHT_INFO_LOGO_SIZE * FLIGHT_INFO_LOGO_SIZE];
+static lv_image_dsc_t s_logo_image = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_RGB565,
+        .w = FLIGHT_INFO_LOGO_SIZE,
+        .h = FLIGHT_INFO_LOGO_SIZE,
+        .stride = FLIGHT_INFO_LOGO_SIZE * 2U,
+    },
+    .data_size = sizeof(s_logo_pixels),
+    .data = (const uint8_t *)s_logo_pixels,
+};
+
+/* A label only ever shows one line, ending in "..." when it runs out. */
+static void one_line(lv_obj_t *label, const lv_font_t *font)
+{
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(label, lv_font_get_line_height(font));
+}
+
+static void create_focus_row(lv_obj_t *parent, size_t index,
+                             const lv_image_dsc_t *icon, const char *symbol)
+{
+    const int32_t y = UI_FOCUS_ROW_Y + ((int32_t)index * UI_FOCUS_ROW_STEP);
+    if (index > 0U) {
+        create_hline(parent, 14, y - 4, BOARD_LCD_H_RES - 28, 0x1C2A3D);
+    }
+    if (icon != NULL) {
+        lv_obj_t *image = lv_image_create(parent);
+        lv_image_set_src(image, icon);
+        lv_obj_set_pos(image, 18, y + 1);
+        lv_obj_set_style_image_recolor(image, lv_color_hex(UI_COLOR_CYAN), 0);
+        lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+        s_ui.fcs_row_icon[index] = image;
+    } else {
+        s_ui.fcs_row_icon[index] = create_font_label(
+            parent, symbol, 18, y + 1, 18, &lv_font_montserrat_14, UI_COLOR_CYAN);
+    }
+    s_ui.fcs_row_text[index] = create_font_label(
+        parent, "", 42, y, BOARD_LCD_H_RES - 48, &lv_font_montserrat_14,
+        UI_COLOR_TEXT);
+    one_line(s_ui.fcs_row_text[index], &lv_font_montserrat_14);
+}
+
+static void create_focus_group(lv_obj_t *screen)
+{
+    lv_obj_t *group = create_group(screen, 0, 24, BOARD_LCD_H_RES, 272);
+    s_ui.trk_focus = group;
+
+    s_ui.fcs_logo = lv_image_create(group);
+    lv_image_set_src(s_ui.fcs_logo, &s_logo_image);
+    lv_obj_set_pos(s_ui.fcs_logo, 0, UI_FOCUS_LOGO_Y);
+    lv_obj_add_flag(s_ui.fcs_logo, LV_OBJ_FLAG_HIDDEN);
+    s_ui.fcs_ident = create_font_label(group, "", 0, UI_FOCUS_LOGO_Y + 1,
+                                       BOARD_LCD_H_RES, &lv_font_montserrat_28,
+                                       UI_COLOR_TEXT);
+    s_ui.fcs_meta = create_centered_label(group, "", UI_FOCUS_META_Y,
+                                          &lv_font_montserrat_12, UI_COLOR_DIM);
+    one_line(s_ui.fcs_meta, &lv_font_montserrat_12);
+
+    s_ui.fcs_from = create_font_label(group, "", 10, UI_FOCUS_ROUTE_Y, 60,
+                                      &lv_font_montserrat_20, UI_COLOR_TEXT);
+    s_ui.fcs_to = create_font_label(group, "", BOARD_LCD_H_RES - 70,
+                                    UI_FOCUS_ROUTE_Y, 60, &lv_font_montserrat_20,
+                                    UI_COLOR_TEXT);
+    lv_obj_set_style_text_align(s_ui.fcs_to, LV_TEXT_ALIGN_RIGHT, 0);
+    s_ui.fcs_mid = create_centered_label(group, "", UI_FOCUS_ROUTE_Y + 7,
+                                         &lv_font_montserrat_12, UI_COLOR_DIM);
+    /* Keep the distance between the two codes rather than over them. */
+    lv_obj_set_width(s_ui.fcs_mid, BOARD_LCD_H_RES - 124);
+    lv_obj_set_x(s_ui.fcs_mid, 62);
+    one_line(s_ui.fcs_mid, &lv_font_montserrat_12);
+
+    s_ui.fcs_track = create_panel(group, UI_FOCUS_BAR_X, UI_FOCUS_BAR_Y,
+                                  UI_FOCUS_BAR_W, 6, 0x1C2A3D);
+    lv_obj_set_style_radius(s_ui.fcs_track, 3, 0);
+    s_ui.fcs_fill = create_panel(s_ui.fcs_track, 0, 0, 1, 6, UI_COLOR_CYAN);
+    lv_obj_set_style_radius(s_ui.fcs_fill, 3, 0);
+    s_ui.fcs_plane = lv_image_create(group);
+    lv_image_set_src(s_ui.fcs_plane, &ui_icon_plane);
+    lv_image_set_pivot(s_ui.fcs_plane, 14, 14);
+    lv_image_set_scale(s_ui.fcs_plane, 170); /* ~19 px */
+    lv_image_set_rotation(s_ui.fcs_plane, 900); /* nose to the destination */
+    lv_obj_set_style_image_recolor(s_ui.fcs_plane, lv_color_hex(UI_COLOR_CYAN), 0);
+    lv_obj_set_style_image_recolor_opa(s_ui.fcs_plane, LV_OPA_COVER, 0);
+    lv_obj_set_pos(s_ui.fcs_plane, UI_FOCUS_BAR_X - 14, UI_FOCUS_BAR_Y + 3 - 14);
+
+    s_ui.fcs_dep = create_font_label(group, "", 10, UI_FOCUS_TIMES_Y,
+                                     BOARD_LCD_H_RES / 2 - 10,
+                                     &lv_font_montserrat_12, UI_COLOR_DIM);
+    s_ui.fcs_arr = create_font_label(group, "", BOARD_LCD_H_RES / 2,
+                                     UI_FOCUS_TIMES_Y, BOARD_LCD_H_RES / 2 - 10,
+                                     &lv_font_montserrat_12, UI_COLOR_DIM);
+    lv_obj_set_style_text_align(s_ui.fcs_arr, LV_TEXT_ALIGN_RIGHT, 0);
+    s_ui.fcs_phase = create_centered_label(group, "", UI_FOCUS_PHASE_Y,
+                                           &lv_font_montserrat_16, UI_COLOR_CYAN);
+    one_line(s_ui.fcs_phase, &lv_font_montserrat_16);
+    s_ui.fcs_divider = create_hline(group, 14, UI_FOCUS_DIVIDER_Y,
+                                    BOARD_LCD_H_RES - 28, UI_COLOR_CYAN);
+
+    create_focus_row(group, 0U, &ui_icon_mountain, NULL);
+    create_focus_row(group, 1U, &ui_icon_gauge, NULL);
+    create_focus_row(group, 2U, &ui_icon_nav, NULL);
+    create_focus_row(group, 3U, NULL, LV_SYMBOL_HOME);
+    create_focus_row(group, 4U, NULL, LV_SYMBOL_EYE_OPEN);
+    lv_obj_add_flag(group, LV_OBJ_FLAG_HIDDEN);
+    s_ui.logo_generation = 0U;
+    s_ui.logo_shown = false;
+}
+
 static void create_tracking_screen_locked(void)
 {
     lv_obj_t *screen = lv_obj_create(NULL);
@@ -1334,6 +1490,7 @@ static void create_tracking_screen_locked(void)
     s_ui.trk_meta = create_centered_label(s_ui.trk_data, "", 37,
                                           &lv_font_montserrat_12,
                                           UI_COLOR_DIM);
+    one_line(s_ui.trk_meta, &lv_font_montserrat_12);
     s_ui.trk_divider = create_hline(s_ui.trk_data, 14, 54,
                                     BOARD_LCD_H_RES - 28, UI_COLOR_CYAN);
     s_ui.trk_distance = create_font_label(s_ui.trk_data, "--",
@@ -1371,6 +1528,8 @@ static void create_tracking_screen_locked(void)
                                                 &lv_font_montserrat_12,
                                                 UI_COLOR_MUTED);
     lv_obj_add_flag(s_ui.trk_empty, LV_OBJ_FLAG_HIDDEN);
+
+    create_focus_group(screen);
 
     /* Footer. */
     create_hline(screen, 14, 296, BOARD_LCD_H_RES - 28, 0x1C2A3D);
@@ -1462,6 +1621,379 @@ static const char *empty_headline(const ui_tracking_state_t *state)
     }
 }
 
+static void format_clock(char *out, size_t capacity, int64_t epoch)
+{
+    const time_t seconds = (time_t)epoch;
+    struct tm local;
+    if (epoch <= 0 || localtime_r(&seconds, &local) == NULL) {
+        (void)snprintf(out, capacity, "--:--");
+        return;
+    }
+    (void)snprintf(out, capacity, "%02d:%02d", local.tm_hour, local.tm_min);
+}
+
+static void format_duration(char *out, size_t capacity, long seconds)
+{
+    if (seconds >= 3600) {
+        (void)snprintf(out, capacity, "%ld:%02ld", seconds / 3600, (seconds % 3600) / 60);
+    } else {
+        (void)snprintf(out, capacity, "%ldm", seconds / 60);
+    }
+}
+
+static void format_age(char *out, size_t capacity, double seconds)
+{
+    if (seconds < 90.0) {
+        (void)snprintf(out, capacity, "%.0fs", seconds);
+    } else if (seconds < 5400.0) {
+        (void)snprintf(out, capacity, "%.0fm", seconds / 60.0);
+    } else {
+        (void)snprintf(out, capacity, "%.1fh", seconds / 3600.0);
+    }
+}
+
+static const char *focus_phase_text(airtrack_flight_phase_t phase,
+                                    const airtrack_aircraft_t *aircraft,
+                                    const flight_schedule_t *schedule,
+                                    uint32_t *color)
+{
+    *color = UI_COLOR_CYAN;
+    switch (phase) {
+    case AIRTRACK_PHASE_GROUND:
+        return aircraft != NULL && aircraft->ground_speed_valid &&
+                       aircraft->ground_speed_kt > 5.0f
+                   ? "TAXIING" : "AT THE GATE";
+    case AIRTRACK_PHASE_CLIMB:
+        return "CLIMBING";
+    case AIRTRACK_PHASE_CRUISE:
+        return "CRUISING";
+    case AIRTRACK_PHASE_DESCENT:
+        return "DESCENDING";
+    case AIRTRACK_PHASE_APPROACH:
+        return "ON APPROACH";
+    case AIRTRACK_PHASE_LANDED:
+        *color = UI_COLOR_GREEN;
+        return "LANDED";
+    case AIRTRACK_PHASE_LOST:
+        *color = UI_COLOR_AMBER;
+        return "SIGNAL LOST";
+    default:
+        break;
+    }
+    *color = UI_COLOR_DIM;
+    if (schedule != NULL && strstr(schedule->status, "cancel") != NULL) {
+        *color = UI_COLOR_RED;
+        return "CANCELLED";
+    }
+    return aircraft != NULL ? "TRACKING" : schedule != NULL ? "SCHEDULED" : "NOT AIRBORNE";
+}
+
+static void update_focus_view(const ui_tracking_state_t *state, double since_success)
+{
+    const airtrack_snapshot_t *snapshot = state->snapshot;
+    const airtrack_settings_t *settings = state->settings;
+    const flight_info_t *flight =
+        state->flight != NULL && strcmp(state->flight->code, settings->focus_flight) == 0
+            ? state->flight : NULL;
+    const airtrack_aircraft_t *aircraft =
+        snapshot->aircraft_count > 0U &&
+                airtrack_aircraft_matches(&snapshot->aircraft[0], settings->focus_flight)
+            ? &snapshot->aircraft[0] : NULL;
+    const flight_route_t *route = flight != NULL && flight->route.valid ? &flight->route : NULL;
+    const flight_schedule_t *schedule =
+        flight != NULL && flight->schedule_state == FLIGHT_SCHEDULE_OK ? &flight->schedule : NULL;
+    const float scale = unit_scale(settings->distance_unit);
+    const char *unit = unit_name(settings->distance_unit);
+    const double age = aircraft != NULL
+        ? (double)aircraft->seen_pos_s + (since_success > 0.0 ? since_success : 0.0) : -1.0;
+    const bool live = aircraft != NULL && age <= UI_STALE_AGE_S &&
+                      snapshot->state == AIRTRACK_FEED_LIVE;
+    const uint32_t value_color = live ? UI_COLOR_TEXT : UI_COLOR_DIM;
+    const bool emergency = aircraft != NULL && aircraft->emergency;
+    char text[96];
+    char clock[8];
+
+    /* Logo and callsign, centred together. */
+    const bool logo = state->logo != NULL && flight != NULL && flight->logo_valid;
+    if (logo && state->logo_generation != s_ui.logo_generation) {
+        memcpy(s_logo_pixels, state->logo, sizeof(s_logo_pixels));
+        s_ui.logo_generation = state->logo_generation;
+        /* LVGL's image cache is disabled (LV_CACHE_DEF_SIZE 0), so the new
+         * pixels are read on the next draw. */
+        lv_obj_invalidate(s_ui.fcs_logo);
+    }
+    if (logo != s_ui.logo_shown) {
+        show_group(s_ui.fcs_logo, logo);
+        s_ui.logo_shown = logo;
+    }
+    const char *ident = route != NULL && route->callsign_icao[0] != '\0' ? route->callsign_icao
+                        : aircraft != NULL && aircraft->callsign[0] != '\0' ? aircraft->callsign
+                                                                            : settings->focus_flight;
+    set_label_if_changed(s_ui.fcs_ident, ident);
+    lv_point_t size;
+    lv_text_get_size(&size, ident, &lv_font_montserrat_28, 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    const int32_t logo_width = logo ? (int32_t)FLIGHT_INFO_LOGO_SIZE + 8 : 0;
+    int32_t start = ((int32_t)BOARD_LCD_H_RES - (logo_width + size.x)) / 2;
+    start = start < 4 ? 4 : start;
+    lv_obj_set_x(s_ui.fcs_logo, start);
+    lv_obj_set_x(s_ui.fcs_ident, start + logo_width);
+    lv_obj_set_width(s_ui.fcs_ident,
+                     LV_MIN(size.x + 2, (int32_t)BOARD_LCD_H_RES - start - logo_width - 4));
+    lv_obj_set_style_text_color(s_ui.fcs_ident,
+        lv_color_hex(emergency ? UI_COLOR_RED : live ? UI_COLOR_TEXT : UI_COLOR_DIM), 0);
+
+    /* Airline, then airframe: ADS-B's name for it, Flystack's model, or
+     * at worst the ICAO designator. */
+    const char *type = aircraft != NULL && aircraft->aircraft_type[0] != '\0'
+                           ? aircraft->aircraft_type
+                       : schedule != NULL ? schedule->aircraft_icao : "";
+    const char *airframe = aircraft != NULL && aircraft->description[0] != '\0'
+                               ? aircraft->description
+                           : schedule != NULL && schedule->model[0] != '\0' ? schedule->model
+                                                                           : type;
+    const char *registration = aircraft != NULL && aircraft->registration[0] != '\0'
+                                   ? aircraft->registration
+                               : schedule != NULL ? schedule->registration : "";
+    const bool gates = schedule != NULL &&
+                       (schedule->dep_gate[0] != '\0' || schedule->arr_gate[0] != '\0');
+    if (!UI_FOCUS_WIDE && gates && airframe[0] != '\0') {
+        /* Narrow, with the gates taking the airframe's row: the logo says
+         * whose flight it is, so the airframe goes up here. */
+        (void)snprintf(text, sizeof(text), "%s", airframe);
+    } else if (route != NULL && route->airline_name[0] != '\0') {
+        /* A narrow panel shows the airframe on its own row instead. */
+        const bool both = UI_FOCUS_WIDE && airframe[0] != '\0';
+        (void)snprintf(text, sizeof(text), "%s%s%s", route->airline_name,
+                       both ? " " LV_SYMBOL_BULLET " " : "", both ? airframe : "");
+    } else {
+        (void)snprintf(text, sizeof(text), "%s%s%s", airframe,
+                       airframe[0] != '\0' && registration[0] != '\0' ? " " LV_SYMBOL_BULLET " " : "",
+                       registration);
+    }
+    set_label_if_changed(s_ui.fcs_meta, text);
+
+    /* Route codes, distance to go, and progress. */
+    /* Route order: as ADS-B has seen the aircraft fly it; before that,
+     * Flystack's leg for today; before that, adsbdb's usual order. */
+    const bool confirmed = aircraft != NULL && aircraft->route_valid &&
+                           aircraft->route_confirmed;
+    const bool timetable = schedule != NULL && schedule->dep_iata[0] != '\0' &&
+                           schedule->arr_iata[0] != '\0';
+    const char *from = confirmed ? aircraft->route_from
+                       : timetable ? schedule->dep_iata
+                       : route != NULL && route->origin[0] != '\0' ? route->origin
+                       : aircraft != NULL && aircraft->route_valid ? aircraft->route_from
+                                                                   : "---";
+    const char *to = confirmed ? aircraft->route_to
+                     : timetable ? schedule->arr_iata
+                     : route != NULL && route->destination[0] != '\0' ? route->destination
+                     : aircraft != NULL && aircraft->route_valid ? aircraft->route_to
+                                                                 : "---";
+    set_label_if_changed(s_ui.fcs_from, from);
+    set_label_if_changed(s_ui.fcs_to, to);
+    lv_obj_set_style_text_color(s_ui.fcs_from, lv_color_hex(value_color), 0);
+    lv_obj_set_style_text_color(s_ui.fcs_to, lv_color_hex(value_color), 0);
+
+    float remaining_nm = -1.0f;
+    long eta_s = -1;
+    if (aircraft != NULL && aircraft->destination_valid && aircraft->route_confirmed) {
+        float bearing = 0.0f;
+        airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                          aircraft->destination_latitude,
+                          aircraft->destination_longitude, &remaining_nm, &bearing);
+        if (aircraft->ground_speed_valid && aircraft->ground_speed_kt >= 60.0f) {
+            eta_s = (long)(remaining_nm / aircraft->ground_speed_kt * 3600.0f);
+        }
+    }
+    const airtrack_flight_phase_t phase = flight != NULL ? flight->phase
+        : aircraft != NULL ? airtrack_flight_phase(aircraft, (float)age, false, remaining_nm)
+                           : AIRTRACK_PHASE_UNKNOWN;
+    const bool landed = phase == AIRTRACK_PHASE_LANDED;
+    const bool was_airborne = flight != NULL ? flight->was_airborne : aircraft != NULL;
+    if (remaining_nm >= 1.0f && !landed) {
+        char grouped[16];
+        format_grouped(grouped, sizeof(grouped), lroundf(remaining_nm * scale));
+        (void)snprintf(text, sizeof(text), "%s %s%s", grouped, unit,
+                       UI_FOCUS_WIDE ? " to go" : "");
+    } else {
+        text[0] = '\0';
+    }
+    set_label_if_changed(s_ui.fcs_mid, text);
+
+    const int64_t now = (int64_t)time(NULL);
+    const int64_t dep_estimate = schedule != NULL && schedule->dep_time > 0
+        ? schedule->dep_time + 60LL * (schedule->dep_delay_min != FLIGHT_DELAY_UNKNOWN
+                                           ? schedule->dep_delay_min : 0) : 0;
+    const int64_t arr_estimate = schedule != NULL && schedule->arr_time > 0
+        ? schedule->arr_time + 60LL * (schedule->arr_delay_min != FLIGHT_DELAY_UNKNOWN
+                                           ? schedule->arr_delay_min : 0) : 0;
+    float progress = aircraft != NULL ? airtrack_route_progress(aircraft) : -1.0f;
+    if (landed) {
+        progress = 1.0f;
+    } else if (progress < 0.0f && !was_airborne && aircraft == NULL) {
+        /* Not reporting yet: still at the origin.  On the ground with the
+         * direction unconfirmed it could be either end, so no marker. */
+        progress = 0.0f;
+    } else if (progress < 0.0f && dep_estimate > 0 && arr_estimate > dep_estimate) {
+        progress = (float)(now - dep_estimate) / (float)(arr_estimate - dep_estimate);
+    }
+    const bool progress_known = progress >= 0.0f;
+    progress = progress < 0.0f ? 0.0f : progress > 1.0f ? 1.0f : progress;
+    const int32_t filled = (int32_t)lroundf(progress * (float)UI_FOCUS_BAR_W);
+    lv_obj_set_width(s_ui.fcs_fill, filled > 0 ? filled : 1);
+    /* The marker's centre stays inside the bar so it never leaves the panel. */
+    const int32_t marker = LV_CLAMP(UI_FOCUS_BAR_X + 8, UI_FOCUS_BAR_X + filled,
+                                    UI_FOCUS_BAR_X + UI_FOCUS_BAR_W - 8);
+    lv_obj_set_x(s_ui.fcs_plane, marker - 14);
+    show_group(s_ui.fcs_plane, progress_known);
+    /* Landed reads as done, a flight not yet seen as waiting, and a held
+     * position as stale. */
+    const uint32_t accent = emergency ? UI_COLOR_RED
+                            : landed ? UI_COLOR_GREEN
+                            : live || aircraft == NULL ? UI_COLOR_CYAN : UI_COLOR_AMBER;
+    lv_obj_set_style_bg_color(s_ui.fcs_fill, lv_color_hex(accent), 0);
+    lv_obj_set_style_image_recolor(s_ui.fcs_plane, lv_color_hex(accent), 0);
+    lv_obj_set_style_bg_color(s_ui.fcs_divider, lv_color_hex(accent), 0);
+
+    /* Departure and arrival times, local to this display.  What ADS-B saw
+     * (takeoff, touchdown, the ground-speed estimate) beats the timetable. */
+    const int64_t departure = flight != NULL && flight->takeoff_epoch > 0
+                                  ? flight->takeoff_epoch : dep_estimate;
+    if (departure > 0) {
+        format_clock(clock, sizeof(clock), departure);
+        (void)snprintf(text, sizeof(text), "DEP %s", clock);
+    } else {
+        text[0] = '\0';
+    }
+    set_label_if_changed(s_ui.fcs_dep, text);
+    lv_obj_set_style_text_color(s_ui.fcs_dep,
+        lv_color_hex(schedule != NULL && schedule->dep_time > 0 &&
+                             departure - schedule->dep_time > 15 * 60
+                         ? UI_COLOR_AMBER : UI_COLOR_DIM), 0);
+    int64_t arrival = 0;
+    if (landed) {
+        arrival = flight != NULL ? flight->landing_epoch : 0;
+    } else if (was_airborne && flight != NULL && flight->eta_epoch > 0) {
+        arrival = flight->eta_epoch;
+    } else if (was_airborne && eta_s >= 0) {
+        arrival = now + eta_s; /* live estimate from ground speed */
+    } else if (arr_estimate > 0) {
+        arrival = arr_estimate;
+    }
+    if (arrival > 0) {
+        format_clock(clock, sizeof(clock), arrival);
+        (void)snprintf(text, sizeof(text), "%s %s", landed ? "LANDED" : "ARR", clock);
+    } else {
+        text[0] = '\0';
+    }
+    set_label_if_changed(s_ui.fcs_arr, text);
+    lv_obj_set_style_text_color(s_ui.fcs_arr,
+        lv_color_hex(schedule != NULL && schedule->arr_time > 0 &&
+                             arrival - schedule->arr_time > 15 * 60
+                         ? UI_COLOR_AMBER : UI_COLOR_DIM), 0);
+
+    /* Phase. */
+    uint32_t phase_color = UI_COLOR_CYAN;
+    const char *phase_text = focus_phase_text(phase, aircraft, schedule, &phase_color);
+    if (emergency) {
+        (void)snprintf(text, sizeof(text), "EMERGENCY %s", aircraft->squawk);
+        phase_text = text;
+        phase_color = UI_COLOR_RED;
+    } else if (!live && aircraft != NULL && phase != AIRTRACK_PHASE_LANDED &&
+               phase != AIRTRACK_PHASE_LOST && phase_color == UI_COLOR_CYAN) {
+        phase_color = UI_COLOR_AMBER;
+    }
+    set_label_if_changed(s_ui.fcs_phase, phase_text);
+    lv_obj_set_style_text_color(s_ui.fcs_phase, lv_color_hex(phase_color), 0);
+
+    /* Rows: altitude, speed and ETA, position, gates or airframe, age. */
+    if (aircraft == NULL) {
+        (void)snprintf(text, sizeof(text), "--");
+    } else if (aircraft->ground) {
+        (void)snprintf(text, sizeof(text), "on the ground");
+    } else if (aircraft->altitude_valid) {
+        char grouped[16];
+        format_grouped(grouped, sizeof(grouped), aircraft->altitude_ft);
+        char rate[24] = "";
+        if (aircraft->vertical_rate_valid && aircraft->vertical_rate_fpm != 0) {
+            char rate_grouped[16];
+            format_grouped(rate_grouped, sizeof(rate_grouped),
+                           labs((long)aircraft->vertical_rate_fpm));
+            (void)snprintf(rate, sizeof(rate), " %s %s",
+                           aircraft->vertical_rate_fpm > 0 ? LV_SYMBOL_UP : LV_SYMBOL_DOWN,
+                           rate_grouped);
+        }
+        (void)snprintf(text, sizeof(text), "%s ft%s", grouped, rate);
+    } else {
+        (void)snprintf(text, sizeof(text), "altitude --");
+    }
+    set_label_if_changed(s_ui.fcs_row_text[0], text);
+
+    if (aircraft != NULL && aircraft->ground_speed_valid) {
+        if (eta_s >= 0 && !landed && !aircraft->ground) {
+            char duration[16];
+            format_duration(duration, sizeof(duration), eta_s);
+            (void)snprintf(text, sizeof(text), "%.0f kt " LV_SYMBOL_BULLET " %s left",
+                           (double)aircraft->ground_speed_kt, duration);
+        } else {
+            (void)snprintf(text, sizeof(text), "%.0f kt", (double)aircraft->ground_speed_kt);
+        }
+    } else {
+        (void)snprintf(text, sizeof(text), "speed --");
+    }
+    set_label_if_changed(s_ui.fcs_row_text[1], text);
+
+    if (aircraft != NULL) {
+        char grouped[16];
+        format_grouped(grouped, sizeof(grouped), lroundf(aircraft->distance_nm * scale));
+        (void)snprintf(text, sizeof(text), "%s %s %s%s", grouped, unit,
+                       cardinal_name(aircraft->bearing_deg),
+                       UI_FOCUS_WIDE ? " of you" : "");
+    } else {
+        (void)snprintf(text, sizeof(text), was_airborne ? "position unknown"
+                                                        : "not airborne yet");
+    }
+    set_label_if_changed(s_ui.fcs_row_text[2], text);
+
+    if (schedule != NULL && (schedule->dep_gate[0] != '\0' || schedule->arr_gate[0] != '\0')) {
+        (void)snprintf(text, sizeof(text), "Gate %s > %s",
+                       schedule->dep_gate[0] != '\0' ? schedule->dep_gate : "--",
+                       schedule->arr_gate[0] != '\0' ? schedule->arr_gate : "--");
+    } else if (airframe[0] != '\0' || registration[0] != '\0') {
+        /* Names are long; the registration fits beside one only when wide. */
+        const bool both = airframe[0] != '\0' && registration[0] != '\0' &&
+                          (UI_FOCUS_WIDE || airframe == type);
+        (void)snprintf(text, sizeof(text), "%s%s%s", airframe[0] != '\0' ? airframe : registration,
+                       both ? " " LV_SYMBOL_BULLET " " : "", both ? registration : "");
+    } else {
+        (void)snprintf(text, sizeof(text), "--");
+    }
+    set_label_if_changed(s_ui.fcs_row_text[3], text);
+
+    if (aircraft != NULL) {
+        char seen[16];
+        format_age(seen, sizeof(seen), age);
+        (void)snprintf(text, sizeof(text), live ? "live " LV_SYMBOL_BULLET " %s old"
+                                                : "last seen %s ago", seen);
+    } else if (was_airborne) {
+        (void)snprintf(text, sizeof(text), landed ? "transponder off" : "no reports");
+    } else {
+        (void)snprintf(text, sizeof(text), "polled every %us",
+                       (unsigned)settings->poll_interval_s);
+    }
+    set_label_if_changed(s_ui.fcs_row_text[4], text);
+
+    for (size_t index = 0U; index < UI_FOCUS_ROWS; ++index) {
+        lv_obj_set_style_text_color(s_ui.fcs_row_text[index], lv_color_hex(value_color), 0);
+        if (index >= 3U) {
+            lv_obj_set_style_text_color(s_ui.fcs_row_icon[index], lv_color_hex(accent), 0);
+        } else {
+            lv_obj_set_style_image_recolor(s_ui.fcs_row_icon[index], lv_color_hex(accent), 0);
+        }
+    }
+}
+
 esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
 {
     if (!s_ui.initialized || state == NULL || state->settings == NULL ||
@@ -1510,7 +2042,20 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         lv_color_hex(since_success >= 0.0 && since_success <= UI_STALE_AGE_S
                          ? UI_COLOR_GREEN : UI_COLOR_AMBER), 0);
 
-    if (snapshot->aircraft_count > 0U) {
+    /* A followed flight gets its own view while the feed is healthy; feed
+     * problems keep the status screen, which says what is wrong. */
+    const bool focused = state->settings->focus_flight[0] != '\0';
+    const bool focus_view = focused &&
+        (snapshot->aircraft_count > 0U || snapshot->state == AIRTRACK_FEED_EMPTY ||
+         snapshot->state == AIRTRACK_FEED_SEARCHING ||
+         snapshot->state == AIRTRACK_FEED_LIVE);
+    show_group(s_ui.trk_focus, focus_view);
+    if (focus_view) {
+        set_radar_animation(false);
+        show_group(s_ui.trk_data, false);
+        show_group(s_ui.trk_empty, false);
+        update_focus_view(state, since_success);
+    } else if (snapshot->aircraft_count > 0U) {
         const airtrack_aircraft_t *aircraft = &snapshot->aircraft[0];
         set_radar_animation(false);
         show_group(s_ui.trk_empty, false);
@@ -1527,12 +2072,14 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         lv_obj_set_style_text_color(s_ui.trk_identity,
             lv_color_hex(aircraft->emergency ? UI_COLOR_RED : value_color), 0);
 
-        /* TYPE • REGISTRATION (falling back to hex), or the emergency. */
+        /* AIRFRAME • REGISTRATION (falling back to hex), or the emergency.
+         * The airframe's name where known, else its ICAO designator. */
         if (aircraft->emergency) {
             (void)snprintf(text, sizeof(text), "EMERGENCY " LV_SYMBOL_BULLET " %s",
                            aircraft->squawk[0] != '\0' ? aircraft->squawk : "");
         } else {
-            const char *type = aircraft->aircraft_type;
+            const char *type = aircraft->description[0] != '\0' ? aircraft->description
+                                                                : aircraft->aircraft_type;
             const char *reg = aircraft->registration[0] != '\0' &&
                               strcmp(aircraft->registration,
                                      target_identity(aircraft)) != 0
@@ -1592,7 +2139,7 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
         /* Remaining distance / ETA to the destination when known. */
         float remaining_nm = -1.0f;
         long eta_s = -1;
-        if (aircraft->destination_valid) {
+        if (aircraft->destination_valid && aircraft->route_confirmed) {
             float bearing_unused;
             airtrack_geometry(aircraft->latitude, aircraft->longitude,
                               aircraft->destination_latitude,
@@ -1602,7 +2149,6 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
                 eta_s = (long)(remaining_nm / aircraft->ground_speed_kt * 3600.0f);
             }
         }
-        const bool focused = state->settings->focus_flight[0] != '\0';
         if (focused && aircraft->route_valid && !aircraft->emergency) {
             if (remaining_nm >= 0.0f) {
                 (void)snprintf(text, sizeof(text), "%s-%s " LV_SYMBOL_BULLET " %.0f %s to go",
@@ -1700,10 +2246,18 @@ esp_err_t ui_diagnostic_show_tracking(const ui_tracking_state_t *state)
 
         const float radius = (float)state->settings->radius_nm *
                              unit_scale(state->settings->distance_unit);
-        (void)snprintf(text, sizeof(text), "%.0f", (double)radius);
-        set_label_if_changed(s_ui.trk_empty_radius, text);
-        set_label_if_changed(s_ui.trk_empty_unit,
-                             unit_name(state->settings->distance_unit));
+        if (focused) {
+            /* No radius applies to a followed flight; name it instead. */
+            set_label_if_changed(s_ui.trk_empty_within, "following");
+            set_label_if_changed(s_ui.trk_empty_radius, state->settings->focus_flight);
+            set_label_if_changed(s_ui.trk_empty_unit, "");
+        } else {
+            (void)snprintf(text, sizeof(text), "%.0f", (double)radius);
+            set_label_if_changed(s_ui.trk_empty_within, "within");
+            set_label_if_changed(s_ui.trk_empty_radius, text);
+            set_label_if_changed(s_ui.trk_empty_unit,
+                                 unit_name(state->settings->distance_unit));
+        }
         layout_value_pair(s_ui.trk_empty_radius, &lv_font_montserrat_28,
                           s_ui.trk_empty_unit, &lv_font_montserrat_16, 206, 11);
         lv_obj_set_style_text_color(s_ui.trk_empty_radius, state_color, 0);

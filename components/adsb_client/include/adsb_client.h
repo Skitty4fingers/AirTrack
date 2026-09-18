@@ -20,6 +20,21 @@ esp_err_t adsb_client_set_online(bool online);
 /** Atomically replace settings and schedule a fresh rate-limited poll. */
 esp_err_t adsb_client_update_settings(const airtrack_settings_t *settings);
 
+/**
+ * Called on the worker task after every poll attempt, once the result is
+ * published.  Further network enrichment (flight details, logos) belongs
+ * here so it is serialized with polling and never adds a second concurrent
+ * TLS session.  Keep it bounded: the next poll waits for it.
+ */
+typedef void (*adsb_client_hook_t)(const airtrack_settings_t *settings,
+                                   const airtrack_snapshot_t *snapshot,
+                                   void *context);
+
+esp_err_t adsb_client_set_hook(adsb_client_hook_t hook, void *context);
+
+/** Run the next poll and hook cycle now rather than after the interval. */
+void adsb_client_wake(void);
+
 /** Copy the latest immutable snapshot. */
 esp_err_t adsb_client_get_snapshot(airtrack_snapshot_t *snapshot);
 

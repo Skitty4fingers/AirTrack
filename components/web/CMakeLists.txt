@@ -10,6 +10,7 @@ idf_component_register(
         board
         config
         esp_http_server
+        flight_info
         ota
         storage
         tracker

@@ -29,7 +29,8 @@ cflags=(-std=gnu17 -O1 -w
   -I"${build_dir}/config" -I"${lvgl}" -I"${lvgl}/src"
   -I"${here}/stubs" -I"${idf_dir}/components/esp_common/include"
   -I"${project}/components/ui/include" -I"${project}/components/config/include"
-  -I"${project}/components/tracker/include" -I"${qr}/include")
+  -I"${project}/components/tracker/include"
+  -I"${project}/components/flight_info/include" -I"${qr}/include")
 
 # LVGL core (skip optional driver/lib trees; all are disabled by Kconfig anyway).
 mapfile -t sources < <(find "${lvgl}/src" -name '*.c' \

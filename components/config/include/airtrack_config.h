@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -97,6 +98,15 @@ esp_err_t airtrack_config_clear_wifi(void);
  * the next boot).  The caller restarts the device afterwards.
  */
 esp_err_t airtrack_config_factory_reset(void);
+
+/** Flystack API token: letters, digits, '-' and '_', 8..64 characters. */
+#define AIRTRACK_FLYSTACK_KEY_MAX_LENGTH 64U
+
+/** Load the stored Flystack token; ESP_ERR_NOT_FOUND when none is set. */
+esp_err_t airtrack_config_load_flystack_key(char *out, size_t capacity);
+
+/** Store the Flystack token, or erase it when key is empty. */
+esp_err_t airtrack_config_save_flystack_key(const char *key);
 
 /** Fill tracker settings with conservative production defaults. */
 void airtrack_settings_defaults(airtrack_settings_t *out);

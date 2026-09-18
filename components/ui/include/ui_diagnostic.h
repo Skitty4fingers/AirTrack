@@ -8,6 +8,7 @@
 #include "esp_lcd_types.h"
 #include "airtrack_config.h"
 #include "airtrack_tracker.h"
+#include "flight_info.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,6 +76,15 @@ typedef struct {
     bool battery_valid;
     bool usb_present;
     uint8_t battery_percent;
+    /*
+     * The followed flight, while settings->focus_flight is set: its details
+     * (route, schedule, phase) and an optional FLIGHT_INFO_LOGO_SIZE square
+     * RGB565 airline logo.  logo_generation changes whenever the pixels do,
+     * so the screen copies them only then.  Either pointer may be NULL.
+     */
+    const flight_info_t *flight;
+    const uint16_t *logo;
+    uint32_t logo_generation;
 } ui_tracking_state_t;
 
 /** Show or update the production nearest-aircraft screen. */

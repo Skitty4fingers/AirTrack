@@ -11,9 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #include "esp_app_desc.h"
 #include "esp_timer.h"
+#include "flight_info.h"
 #include "ota_update.h"
 #include "storage_logger.h"
 #include "esp_http_server.h"
@@ -149,7 +151,32 @@ static const char PAGE_FORM_START[] =
 
 static const char PAGE_GRID_START[] =
     "\"><div class=grid><div class=col>"
-    "<section class=card id=dashboard><h2>Nearest aircraft</h2>";
+    "<section class=card id=dashboard>";
+
+/*
+ * Followed-flight card.  The script fills it from /api/v1/flight and
+ * /api/v1/aircraft; it is shown instead of the nearest-aircraft block while
+ * a single flight is followed.
+ */
+static const char PAGE_FLIGHT[] =
+    "<div class=fhead><img id=flogo class=logo alt=\"\" hidden>"
+    "<div class=fid><div class=cs id=fcs></div><div class=sub id=fairline></div></div>"
+    "<span id=fstatus class=pill></span></div>"
+    "<div class=froute><div class=ap><b id=ffrom>&mdash;</b><span id=ffromcity></span></div>"
+    "<div class=fbar><div class=ftrack><i id=ffill></i><span id=fdot class=fdot>"
+    ICON_PLANE "</span></div><div class=fprog id=fprog></div></div>"
+    "<div class=\"ap r\"><b id=fto>&mdash;</b><span id=ftocity></span></div></div>"
+    "<div class=ftimes><div><h4>Departure</h4><p id=fdep>&mdash;</p><p class=sub id=fdepsub></p></div>"
+    "<div><h4>Arrival</h4><p id=farr>&mdash;</p><p class=sub id=farrsub></p></div></div>"
+    "<svg id=fmap class=fmap viewBox=\"0 0 600 280\" preserveAspectRatio=\"xMidYMid slice\" "
+    "role=img aria-label=\"Flight path\"></svg>"
+    "<p class=mapcredit>Imagery: <a href=https://earthdata.nasa.gov/gibs rel=noopener>"
+    "NASA GIBS</a>, Blue Marble</p>"
+    "<ul class=\"facts fl\"><li>" ICON_MTN "<span id=falt>&mdash;</span></li>"
+    "<li>" ICON_GAUGE "<span id=fspd>&mdash;</span></li>"
+    "<li>" ICON_NAV "<span id=fpos>&mdash;</span></li>"
+    "<li>" ICON_CLOCK "<span id=fage>&mdash;</span></li></ul>"
+    "<p class=sub id=fcraft></p><p class=hint id=fnote></p>";
 
 /* SVG compass; the arrow/plane/arc are re-oriented by the script. */
 static const char PAGE_COMPASS[] =
@@ -411,6 +438,7 @@ static esp_err_t set_security_headers(httpd_req_t *request)
         result = httpd_resp_set_hdr(
             request, "Content-Security-Policy",
             "default-src 'none'; style-src 'self'; script-src 'self'; "
+            "img-src 'self' https://pics.avs.io https://gibs.earthdata.nasa.gov; "
             "connect-src 'self'; form-action 'self'; base-uri 'none'; "
             "frame-ancestors 'none'");
     }
@@ -584,6 +612,13 @@ static esp_err_t send_json_escaped(httpd_req_t *request, const char *text)
     return flush_escape_buffer(request, buffer, &used);
 }
 
+/* The airframe's name where known, else its ICAO type designator. */
+static const char *airframe_label(const airtrack_aircraft_t *aircraft)
+{
+    return aircraft->description[0] != '\0' ? aircraft->description
+                                            : aircraft->aircraft_type;
+}
+
 static const char *aircraft_identity(const airtrack_aircraft_t *aircraft)
 {
     if (aircraft->callsign[0] != '\0') {
@@ -657,7 +692,7 @@ static esp_err_t send_aircraft_row(httpd_req_t *request,
         result = send_html_chunk(request, "</td><td>");
     }
     if (result == ESP_OK) {
-        result = send_html_escaped(request, aircraft->aircraft_type);
+        result = send_html_escaped(request, airframe_label(aircraft));
     }
     if (result == ESP_OK) {
         result = send_html_chunk(request, "</td><td>");
@@ -760,7 +795,8 @@ static const char *api_text(airtrack_feed_state_t state)
 static long route_remaining(const airtrack_aircraft_t *aircraft, float *remaining_nm)
 {
     *remaining_nm = -1.0f;
-    if (!aircraft->destination_valid) {
+    /* Until ADS-B confirms the direction, "destination" may be the origin. */
+    if (!aircraft->destination_valid || !aircraft->route_confirmed) {
         return -1;
     }
     float bearing;
@@ -787,20 +823,30 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
 {
     const bool have_target = snapshot->aircraft.aircraft_count > 0U;
     const airtrack_aircraft_t *aircraft = &snapshot->aircraft.aircraft[0];
-    esp_err_t result = ESP_OK;
+    const bool focused = snapshot->settings.focus_flight[0] != '\0';
     char text[1024];
 
-    if (!snapshot->settings.location_configured) {
+    esp_err_t result = send_html_chunk(request, focused ? "<h2 id=dtitle>Tracking "
+                                                        : "<h2 id=dtitle>Nearest aircraft");
+    if (result == ESP_OK && focused) {
+        result = send_html_escaped(request, snapshot->settings.focus_flight);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "</h2>");
+    }
+    if (result == ESP_OK && !snapshot->settings.location_configured) {
         result = send_html_chunk(request,
             "<div class=banner>Enter this display's fixed location under "
             "<b>Location</b> and save to start tracking.</div>");
-    } else if (snapshot->settings.latitude_e7 == AIRTRACK_PLACEHOLDER_LATITUDE_E7 &&
-               snapshot->settings.longitude_e7 == AIRTRACK_PLACEHOLDER_LONGITUDE_E7) {
+    } else if (result == ESP_OK &&
+               snapshot->settings.latitude_e7 == AIRTRACK_PLACEHOLDER_LATITUDE_E7 &&
+               snapshot->settings.longitude_e7 == AIRTRACK_PLACEHOLDER_LONGITUDE_E7 &&
+               !focused) {
         result = send_html_chunk(request,
             "<div class=banner>Tracking around <b>Seattle&ndash;Tacoma International</b> "
             "(the setup placeholder). Enter this display's real position under "
             "<b>Location</b> &mdash; or use the location button &mdash; and save.</div>");
-    } else if (snapshot->settings.focus_flight[0] != '\0') {
+    } else if (result == ESP_OK && focused) {
         result = send_html_chunk(request,
             "<div class=banner>Following <b>");
         if (result == ESP_OK) {
@@ -808,9 +854,21 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
         }
         if (result == ESP_OK) {
             result = send_html_chunk(request,
-                "</b> only. Clear <b>Track a single flight</b> under Location "
-                "to return to the nearest aircraft.</div>");
+                "</b> worldwide, from takeoff to landing. Clear <b>Track a single "
+                "flight</b> under Location to return to the nearest aircraft.</div>");
         }
+    }
+
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, focused ? "<div id=flight class=flight>"
+                                                  : "<div id=flight class=flight hidden>");
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, PAGE_FLIGHT);
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, focused ? "</div><div id=nearest hidden>"
+                                                  : "</div><div id=nearest>");
     }
 
     /* Empty-state block. */
@@ -867,12 +925,12 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
         result = send_html_chunk(request, "</div><div class=meta id=meta>");
     }
     if (result == ESP_OK && have_target) {
-        if (aircraft->aircraft_type[0] != '\0') {
-            result = send_html_escaped(request, aircraft->aircraft_type);
+        if (airframe_label(aircraft)[0] != '\0') {
+            result = send_html_escaped(request, airframe_label(aircraft));
         }
         if (result == ESP_OK && aircraft->registration[0] != '\0' &&
             strcmp(aircraft->registration, aircraft_identity(aircraft)) != 0) {
-            if (aircraft->aircraft_type[0] != '\0') {
+            if (airframe_label(aircraft)[0] != '\0') {
                 result = send_html_chunk(request, " &middot; ");
             }
             if (result == ESP_OK) {
@@ -978,7 +1036,7 @@ static esp_err_t send_nearest_card(httpd_req_t *request,
         const int length = snprintf(
             text, sizeof(text),
             "</tbody></table></div><p id=counts class=hint>%lu shown of %lu reports "
-            "within %u NM</p></section>",
+            "within %u NM</p></div></section>",
             (unsigned long)snapshot->aircraft.aircraft_accepted,
             (unsigned long)snapshot->aircraft.aircraft_reported,
             (unsigned)snapshot->settings.radius_nm);
@@ -1106,19 +1164,42 @@ static esp_err_t send_settings_cards(httpd_req_t *request,
             "location only over HTTPS, so the button hands you to a small HTTPS "
             "helper page that brings the coordinates back here; or paste them.</p>"
             "<h3>Track a single flight</h3>"
-            "<input name=focus type=text maxlength=8 placeholder=\"e.g. UAL205, N37267 or A280A4 (blank = nearest)\" value=\"%s\">"
-            "<p class=hint>When set, only that callsign, registration, or hex is "
-            "shown, with its route, distance to go, and an ETA estimated from "
-            "ground speed. Scheduled times need a paid flight-schedule API and are "
-            "not available.</p></section>"
+            "<div class=inrow><input name=focus id=focus type=text maxlength=8 "
+            "autocapitalize=characters spellcheck=false "
+            "placeholder=\"e.g. ASA555, N37267 or A280A4 (blank = nearest)\" value=\"%s\">"
+            "<button type=button id=fcheck class=ghost>Check</button></div>"
+            "<div id=fval class=fval aria-live=polite hidden></div>"
+            "<p class=hint>Followed worldwide by callsign, registration, or ICAO hex, "
+            "from the gate to landing; the search radius and airborne filter do not "
+            "apply. <b>Check</b> confirms an airline flight number with adsbdb.com, "
+            "and with a Flystack key also fetches its schedule (one lookup).</p></section>",
+            latitude, longitude, settings->focus_flight);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        length = snprintf(
+            text, sizeof(text),
+            "<section class=card id=flightdata><h2>Flight data</h2>"
+            "<p class=sub id=fskey>Checking&hellip;</p>"
+            "<div class=inrow><input id=fskeyin type=password autocomplete=off "
+            "spellcheck=false placeholder=\"Flystack API key\">"
+            "<button type=button id=fskeysave class=ghost>Save key</button>"
+            "<button type=button id=fskeyclear class=\"ghost danger\" hidden>Remove</button></div>"
+            "<p class=hint id=fsquota></p>"
+            "<p class=hint>Schedules, delays, gates, and airframe details for the followed "
+            "flight come from <a href=https://flystack.dev rel=noopener>Flystack</a>. Its free "
+            "plan allows about 100 lookups a month, so AirTrack spends at most three per "
+            "followed flight (when it is chosen, at takeoff, and on approach) and never more "
+            "than %u a day. The key stays on this device. Airline and route come free from "
+            "adsbdb.com, and logos from pics.avs.io.</p></section>"
             "<section class=card><h2>Search radius</h2><div class=range-row>"
             "<input type=range id=rad min=1 max=250 value=%u>"
             "<input type=number id=radn name=radius min=1 max=250 value=%u required>"
             "<span>NM</span></div><div class=ticks><span>1</span><span>50</span>"
             "<span>100</span><span>150</span><span>200</span><span>250</span></div>"
-            "</section>",
-            latitude, longitude, settings->focus_flight,
-            (unsigned)settings->radius_nm, (unsigned)settings->radius_nm);
+            "<p class=hint>Not used while following a single flight.</p></section>",
+            FLIGHT_INFO_DAILY_CAP, (unsigned)settings->radius_nm,
+            (unsigned)settings->radius_nm);
         result = send_chunk_or_size(request, text, length, sizeof(text));
     }
     if (result == ESP_OK) {
@@ -1920,10 +2001,13 @@ typedef struct {
     bool have_night_to;
     bool have_night_brightness;
     bool have_tz;
+    bool have_code;
+    bool have_key;
     bool airborne;
     bool logging;
     bool night;
     bool night_led;
+    bool schedule;
     char latitude[24];
     char longitude[24];
     char radius[8];
@@ -1940,6 +2024,8 @@ typedef struct {
     char night_to[8];
     char night_brightness[8];
     char tz[AIRTRACK_TZ_MAX_LENGTH + 1U];
+    char code[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
+    char key[AIRTRACK_FLYSTACK_KEY_MAX_LENGTH + 1U];
 } settings_form_t;
 
 /*
@@ -1996,6 +2082,8 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         FIELD("night_to", form->night_to, have_night_to)
         FIELD("night_brightness", form->night_brightness, have_night_brightness)
         FIELD("tz", form->tz, have_tz)
+        FIELD("code", form->code, have_code)
+        FIELD("key", form->key, have_key)
 #undef FIELD
         else if (strcmp(key, "airborne") == 0 && !form->airborne) {
             result = decode_form(encoded, encoded_length, flag, sizeof(flag));
@@ -2009,6 +2097,9 @@ static esp_err_t decode_settings_form(const char *body, size_t length,
         } else if (strcmp(key, "night_led") == 0 && !form->night_led) {
             result = decode_form(encoded, encoded_length, flag, sizeof(flag));
             form->night_led = result == ESP_OK && strcmp(flag, "1") == 0;
+        } else if (strcmp(key, "schedule") == 0 && !form->schedule) {
+            result = decode_form(encoded, encoded_length, flag, sizeof(flag));
+            form->schedule = result == ESP_OK && strcmp(flag, "1") == 0;
         } else {
             return ESP_ERR_INVALID_ARG;
         }
@@ -2361,7 +2452,13 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             result = send_json_escaped(request, aircraft->aircraft_type);
         }
         if (result == ESP_OK) {
-            char route[80];
+            result = send_html_chunk(request, "\",\"desc\":\"");
+        }
+        if (result == ESP_OK) {
+            result = send_json_escaped(request, aircraft->description);
+        }
+        if (result == ESP_OK) {
+            char route[192];
             float remaining_nm = -1.0f;
             const long eta_s = route_remaining(aircraft, &remaining_nm);
             char remaining[24] = "null";
@@ -2372,13 +2469,21 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
             if (eta_s >= 0) {
                 (void)snprintf(eta, sizeof(eta), "%ld", eta_s);
             }
+            char progress[16] = "null";
+            const float flown = airtrack_route_progress(aircraft);
+            if (flown >= 0.0f) {
+                (void)snprintf(progress, sizeof(progress), "%.3f", (double)flown);
+            }
             const int length = snprintf(
                 route, sizeof(route),
                 "\",\"route_from\":\"%s\",\"route_to\":\"%s\","
-                "\"remaining_nm\":%s,\"eta_s\":%s",
+                "\"remaining_nm\":%s,\"eta_s\":%s,\"progress\":%s,"
+                "\"airline_iata\":\"%s\",\"route_confirmed\":%s",
                 aircraft->route_valid ? aircraft->route_from : "",
                 aircraft->route_valid ? aircraft->route_to : "",
-                remaining, eta);
+                remaining, eta, progress,
+                aircraft->route_valid ? aircraft->airline_iata : "",
+                aircraft->route_confirmed ? "true" : "false");
             result = send_chunk_or_size(request, route, length, sizeof(route));
         }
         if (result == ESP_OK) {
@@ -2392,7 +2497,7 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
                 "\"speed_valid\":%s,\"track_deg\":%.1f,"
                 "\"track_valid\":%s,\"vertical_rate_fpm\":%ld,"
                 "\"vertical_rate_valid\":%s,\"seen_pos_s\":%.2f,"
-                "\"age_s\":%.1f}",
+                "\"age_s\":%.1f,\"lat\":%.5f,\"lon\":%.5f,\"year\":%u}",
                 aircraft->emergency ? "true" : "false",
                 aircraft->ground ? "true" : "false",
                 (long)aircraft->altitude_ft,
@@ -2405,7 +2510,9 @@ static esp_err_t aircraft_api_handler(httpd_req_t *request)
                 (long)aircraft->vertical_rate_fpm,
                 aircraft->vertical_rate_valid ? "true" : "false",
                 (double)aircraft->seen_pos_s,
-                current_position_age_s(&snapshot, aircraft));
+                current_position_age_s(&snapshot, aircraft),
+                aircraft->latitude, aircraft->longitude,
+                (unsigned)aircraft->build_year);
             result = (length < 0 || (size_t)length >= sizeof(numeric))
                          ? ESP_ERR_INVALID_SIZE
                          : httpd_resp_send_chunk(request, numeric,
@@ -2772,6 +2879,353 @@ static esp_err_t ota_start_handler(httpd_req_t *request)
     return send_form_result(request, true, "200 OK", "");
 }
 
+/*
+ * Flight details.  Every string below comes from flight_info, whose parsers
+ * reduce service data to printable ASCII without quotes, backslashes, or
+ * markup, or is a validated focus code, so it is safe inside JSON strings.
+ */
+static int format_route_json(char *out, size_t capacity, const flight_route_t *route)
+{
+    return snprintf(out, capacity,
+        "{\"valid\":%s,\"callsign_icao\":\"%s\",\"callsign_iata\":\"%s\","
+        "\"airline\":\"%s\",\"airline_icao\":\"%s\",\"airline_iata\":\"%s\","
+        "\"from\":\"%s\",\"to\":\"%s\",\"from_city\":\"%s\",\"to_city\":\"%s\"}",
+        route->valid ? "true" : "false", route->callsign_icao, route->callsign_iata,
+        route->airline_name, route->airline_icao, route->airline_iata,
+        route->origin, route->destination, route->origin_city,
+        route->destination_city);
+}
+
+static void json_delay(char out[8], int16_t minutes)
+{
+    if (minutes == FLIGHT_DELAY_UNKNOWN) {
+        memcpy(out, "null", sizeof("null"));
+    } else {
+        (void)snprintf(out, 8U, "%d", (int)minutes);
+    }
+}
+
+static int format_schedule_json(char *out, size_t capacity,
+                                flight_schedule_state_t state,
+                                const flight_schedule_t *schedule)
+{
+    if (state != FLIGHT_SCHEDULE_OK) {
+        return snprintf(out, capacity, "\"schedule_state\":\"%s\",\"schedule\":null",
+                        flight_schedule_state_name(state));
+    }
+    char dep_delay[8];
+    char arr_delay[8];
+    json_delay(dep_delay, schedule->dep_delay_min);
+    json_delay(arr_delay, schedule->arr_delay_min);
+    return snprintf(out, capacity,
+        "\"schedule_state\":\"ok\",\"schedule\":{\"status\":\"%s\","
+        "\"flight_icao\":\"%s\",\"flight_iata\":\"%s\",\"airline_iata\":\"%s\","
+        "\"from\":\"%s\",\"to\":\"%s\",\"dep_time\":%lld,\"arr_time\":%lld,"
+        "\"dep_delay_min\":%s,\"arr_delay_min\":%s,\"dep_terminal\":\"%s\","
+        "\"dep_gate\":\"%s\",\"arr_terminal\":\"%s\",\"arr_gate\":\"%s\","
+        "\"arr_baggage\":\"%s\",\"aircraft\":\"%s\",\"registration\":\"%s\","
+        "\"model\":\"%s\",\"built\":%d,\"fetched\":%lld}",
+        schedule->status, schedule->flight_icao, schedule->flight_iata,
+        schedule->airline_iata, schedule->dep_iata, schedule->arr_iata,
+        (long long)schedule->dep_time, (long long)schedule->arr_time,
+        dep_delay, arr_delay, schedule->dep_terminal, schedule->dep_gate,
+        schedule->arr_terminal, schedule->arr_gate, schedule->arr_baggage,
+        schedule->aircraft_icao, schedule->registration, schedule->model,
+        (int)schedule->built, (long long)schedule->fetched_epoch);
+}
+
+/* "HH:MM" in the device's timezone (the one the LCD and night schedule
+ * use), or "" when the time is unknown. */
+static void local_clock(char out[8], int64_t epoch)
+{
+    out[0] = '\0';
+    const time_t seconds = (time_t)epoch;
+    struct tm local;
+    if (epoch > 0 && localtime_r(&seconds, &local) != NULL) {
+        (void)strftime(out, 8U, "%H:%M", &local);
+    }
+}
+
+static int64_t delayed(int64_t scheduled, int16_t delay_min)
+{
+    return scheduled > 0 && delay_min != FLIGHT_DELAY_UNKNOWN
+               ? scheduled + 60LL * delay_min : scheduled;
+}
+
+/*
+ * Times for the flight card.  What ADS-B observed (takeoff, landing, the
+ * ground-speed arrival estimate) is listed apart from Flystack's timetable
+ * so the page can let the observation win; all are also given as local
+ * clock times with the zone's abbreviation.
+ */
+static int format_times_json(char *out, size_t capacity, const flight_info_t *info)
+{
+    const bool scheduled = info->schedule_state == FLIGHT_SCHEDULE_OK;
+    const int64_t values[] = {
+        info->takeoff_epoch, info->landing_epoch, info->eta_epoch,
+        scheduled ? info->schedule.dep_time : 0,
+        scheduled ? delayed(info->schedule.dep_time, info->schedule.dep_delay_min) : 0,
+        scheduled ? info->schedule.arr_time : 0,
+        scheduled ? delayed(info->schedule.arr_time, info->schedule.arr_delay_min) : 0,
+    };
+    char clocks[7][8];
+    for (size_t index = 0U; index < 7U; ++index) {
+        local_clock(clocks[index], values[index]);
+    }
+    char zone[16] = "";
+    const time_t now = time(NULL);
+    struct tm local;
+    if (localtime_r(&now, &local) != NULL) {
+        (void)strftime(zone, sizeof(zone), "%Z", &local);
+    }
+    /* A POSIX rule such as "<+04>-4" names its zone with brackets. */
+    for (char *cursor = zone; *cursor != '\0'; ++cursor) {
+        if (*cursor == '"' || *cursor == '\\' || *cursor == '<' || *cursor == '>') {
+            *cursor = ' ';
+        }
+    }
+    return snprintf(out, capacity,
+        ",\"times\":{\"zone\":\"%s\",\"takeoff\":%lld,\"takeoff_local\":\"%s\","
+        "\"landing\":%lld,\"landing_local\":\"%s\",\"eta\":%lld,\"eta_local\":\"%s\","
+        "\"dep_sched_local\":\"%s\",\"dep_est_local\":\"%s\","
+        "\"arr_sched_local\":\"%s\",\"arr_est_local\":\"%s\"}",
+        zone, (long long)values[0], clocks[0], (long long)values[1], clocks[1],
+        (long long)values[2], clocks[2], clocks[3], clocks[4], clocks[5], clocks[6]);
+}
+
+static esp_err_t send_json_start(httpd_req_t *request)
+{
+    esp_err_t result = httpd_resp_set_type(request, "application/json; charset=utf-8");
+    return result == ESP_OK ? set_security_headers(request) : result;
+}
+
+static esp_err_t flight_api_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/api/v1/flight");
+    }
+    /* The HTTP server runs one handler at a time; keep these off its stack. */
+    static flight_info_t info;
+    static flight_trail_point_t trail[FLIGHT_INFO_TRAIL_MAX];
+    static flight_quota_t quota;
+    flight_info_get(&info);
+    const size_t points = flight_info_get_trail(trail, FLIGHT_INFO_TRAIL_MAX);
+    flight_info_get_quota(&quota);
+
+    char text[1024];
+    char remaining[16] = "null";
+    if (quota.usage_valid) {
+        (void)snprintf(remaining, sizeof(remaining), "%ld", (long)quota.remaining);
+    }
+    esp_err_t result = send_json_start(request);
+    if (result == ESP_OK) {
+        const int length = snprintf(
+            text, sizeof(text),
+            "{\"focus\":\"%s\",\"code\":\"%s\",\"phase\":\"%s\",\"was_airborne\":%s,"
+            "\"route_confirmed\":%s,"
+            "\"logo_iata\":\"%s\",\"quota\":{\"key_set\":%s,\"key_hint\":\"%s\","
+            "\"remaining\":%s,\"renewal\":\"%s\",\"calls_today\":%u,"
+            "\"daily_cap\":%u,\"last_error\":\"%s\"},\"route\":",
+            snapshot.settings.focus_flight, info.code,
+            airtrack_flight_phase_name(info.phase),
+            info.was_airborne ? "true" : "false",
+            info.route_confirmed ? "true" : "false",
+            info.logo_valid ? info.logo_iata : "",
+            quota.key_set ? "true" : "false", quota.key_hint, remaining,
+            quota.renewal, (unsigned)quota.calls_today, (unsigned)quota.daily_cap,
+            flight_schedule_state_name(quota.last_error));
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        const int length = format_route_json(text, sizeof(text), &info.route);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        text[0] = ',';
+        const int length = format_schedule_json(text + 1, sizeof(text) - 1U,
+                                                info.schedule_state, &info.schedule);
+        result = send_chunk_or_size(request, text, length + 1, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        const int length = format_times_json(text, sizeof(text), &info);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        /* Airport positions come with the live aircraft's route. */
+        const airtrack_aircraft_t *aircraft =
+            snapshot.aircraft.aircraft_count > 0U &&
+                    airtrack_aircraft_matches(&snapshot.aircraft.aircraft[0], info.code)
+                ? &snapshot.aircraft.aircraft[0] : NULL;
+        char origin[40] = "null";
+        char destination[40] = "null";
+        if (aircraft != NULL && aircraft->origin_valid) {
+            (void)snprintf(origin, sizeof(origin), "[%.4f,%.4f]",
+                           aircraft->origin_latitude, aircraft->origin_longitude);
+        }
+        if (aircraft != NULL && aircraft->destination_valid) {
+            (void)snprintf(destination, sizeof(destination), "[%.4f,%.4f]",
+                           aircraft->destination_latitude,
+                           aircraft->destination_longitude);
+        }
+        const int length = snprintf(
+            text, sizeof(text), ",\"home\":[%.4f,%.4f],\"origin\":%s,\"destination\":%s",
+            (double)snapshot.settings.latitude_e7 / 10000000.0,
+            (double)snapshot.settings.longitude_e7 / 10000000.0, origin, destination);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, ",\"trail\":[");
+    }
+    for (size_t index = 0U; result == ESP_OK && index < points; ++index) {
+        const int length = snprintf(text, sizeof(text), "%s[%.4f,%.4f,%d]",
+                                    index > 0U ? "," : "",
+                                    (double)trail[index].latitude,
+                                    (double)trail[index].longitude,
+                                    (int)trail[index].altitude_hft);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "]}");
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+/* The followed airline's logo, relayed so the page never depends on the
+ * browser reaching (or being allowed to reach) the logo host. */
+static esp_err_t flight_logo_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/api/v1/flight/logo.png");
+    }
+    size_t length = 0U;
+    char iata[3];
+    uint8_t *png = flight_info_copy_logo_png(&length, iata);
+    if (png == NULL) {
+        return send_plain_error(request, "404 Not Found", "No logo.");
+    }
+    esp_err_t result = httpd_resp_set_type(request, "image/png");
+    if (result == ESP_OK) {
+        result = set_security_headers(request);
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send(request, (const char *)png, length);
+    }
+    free(png);
+    return result;
+}
+
+static esp_err_t flight_check_get_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_canonical_redirect(request, &snapshot, "/api/v1/flight/check");
+    }
+    static flight_check_t check;
+    flight_info_get_check(&check);
+    char text[1024];
+    static const char *states[] = {"idle", "pending", "done"};
+    esp_err_t result = send_json_start(request);
+    if (result == ESP_OK) {
+        const int length = snprintf(
+            text, sizeof(text),
+            "{\"state\":\"%s\",\"query\":\"%s\",\"schedule_requested\":%s,"
+            "\"route_answered\":%s,\"route\":",
+            states[check.state <= FLIGHT_CHECK_DONE ? check.state : 0], check.query,
+            check.schedule_requested ? "true" : "false",
+            check.route_answered ? "true" : "false");
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        const int length = format_route_json(text, sizeof(text), &check.route);
+        result = send_chunk_or_size(request, text, length, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        text[0] = ',';
+        const int length = format_schedule_json(text + 1, sizeof(text) - 1U,
+                                                check.schedule_state, &check.schedule);
+        result = send_chunk_or_size(request, text, length + 1, sizeof(text));
+    }
+    if (result == ESP_OK) {
+        result = send_html_chunk(request, "}");
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    return result;
+}
+
+static esp_err_t read_csrf_form(httpd_req_t *request, settings_form_t *form)
+{
+    char body[STATUS_WEB_FORM_MAX_BYTES + 1U];
+    size_t received = 0U;
+    esp_err_t result = read_form_body(request, body, sizeof(body), &received);
+    if (result == ESP_OK) {
+        result = decode_settings_form(body, received, form);
+    }
+    memset(body, 0, sizeof(body));
+    return result == ESP_OK && !form->csrf_ok ? ESP_ERR_INVALID_STATE : result;
+}
+
+static esp_err_t flight_check_post_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    settings_form_t form;
+    if (read_csrf_form(request, &form) != ESP_OK) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    char code[AIRTRACK_FOCUS_MAX_LENGTH + 1U];
+    size_t used = 0U;
+    for (const char *cursor = form.code; *cursor != '\0' && used < sizeof(code) - 1U;
+         ++cursor) {
+        if (*cursor != ' ') {
+            code[used++] = (char)toupper((unsigned char)*cursor);
+        }
+    }
+    code[used] = '\0';
+    if (!form.have_code || flight_info_request_check(code, form.schedule) != ESP_OK) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "Use letters, digits and dashes (2 to 8).");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
+static esp_err_t flystack_key_handler(httpd_req_t *request)
+{
+    const status_web_snapshot_storage_t snapshot = copy_snapshot();
+    if (!request_has_canonical_host(request, &snapshot)) {
+        return send_form_result(request, false, "403 Forbidden",
+                                "Use the address shown on the LCD.");
+    }
+    static settings_form_t form;
+    esp_err_t result = read_csrf_form(request, &form);
+    if (result != ESP_OK) {
+        memset(&form, 0, sizeof(form));
+        return send_form_result(request, false, "403 Forbidden",
+                                "Session token expired; reload the page.");
+    }
+    result = form.have_key ? flight_info_set_key(form.key) : ESP_ERR_INVALID_ARG;
+    memset(&form, 0, sizeof(form));
+    if (result == ESP_ERR_INVALID_ARG) {
+        return send_form_result(request, false, "400 Bad Request",
+                                "That does not look like a Flystack key.");
+    }
+    if (result != ESP_OK) {
+        return send_form_result(request, false, "500 Internal Server Error",
+                                "The key was not saved.");
+    }
+    return send_form_result(request, true, "200 OK", "");
+}
+
 static esp_err_t favicon_handler(httpd_req_t *request)
 {
     const status_web_snapshot_storage_t snapshot = copy_snapshot();
@@ -2873,6 +3327,36 @@ static const httpd_uri_t URI_FAVICON = {
     .handler = favicon_handler,
 };
 
+static const httpd_uri_t URI_FLIGHT = {
+    .uri = "/api/v1/flight",
+    .method = HTTP_GET,
+    .handler = flight_api_handler,
+};
+
+static const httpd_uri_t URI_FLIGHT_LOGO = {
+    .uri = "/api/v1/flight/logo.png",
+    .method = HTTP_GET,
+    .handler = flight_logo_handler,
+};
+
+static const httpd_uri_t URI_FLIGHT_CHECK = {
+    .uri = "/api/v1/flight/check",
+    .method = HTTP_GET,
+    .handler = flight_check_get_handler,
+};
+
+static const httpd_uri_t URI_FLIGHT_CHECK_POST = {
+    .uri = "/api/v1/flight/check",
+    .method = HTTP_POST,
+    .handler = flight_check_post_handler,
+};
+
+static const httpd_uri_t URI_FLYSTACK_KEY = {
+    .uri = "/api/v1/flystack",
+    .method = HTTP_POST,
+    .handler = flystack_key_handler,
+};
+
 static const httpd_uri_t URI_APP_JS = {
     .uri = "/app.js",
     .method = HTTP_GET,
@@ -2952,6 +3436,11 @@ esp_err_t status_web_start(const status_web_snapshot_t *snapshot,
         &URI_OTA_START,
         &URI_FACTORY_RESET,
         &URI_LOG_FILE,
+        &URI_FLIGHT,
+        &URI_FLIGHT_LOGO,
+        &URI_FLIGHT_CHECK,
+        &URI_FLIGHT_CHECK_POST,
+        &URI_FLYSTACK_KEY,
         &URI_FAVICON,
         &URI_APP_JS,
         &URI_APP_CSS,

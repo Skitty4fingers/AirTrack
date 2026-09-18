@@ -89,3 +89,37 @@ button.danger{color:var(--bad);border-color:#f0b4b4}button.danger:hover{backgrou
 #otabar{height:8px;background:#e3e8ef;border-radius:4px;overflow:hidden;margin-top:14px}
 #otafill{height:100%;width:0;background:var(--blue);transition:width .4s}
 .notes{margin-top:4px}.notes p{margin:0;white-space:pre-line;line-height:1.55;font-size:.95rem;background:var(--bg);border-left:3px solid var(--blue);border-radius:6px;padding:10px 14px;overflow-wrap:anywhere}
+input[type=password]{width:100%;padding:11px 12px;border:1px solid #c9d3e0;border-radius:8px;font:inherit;color:var(--ink);background:#fff}
+.inrow{display:grid;grid-template-columns:minmax(0,1fr);grid-auto-flow:column;grid-auto-columns:auto;gap:10px;margin-top:6px;align-items:center}
+.inrow input{margin:0}.inrow button{white-space:nowrap;padding:10px 14px}
+.fval{margin-top:10px;border-radius:10px;padding:10px 14px;font-size:.92rem;line-height:1.5;background:var(--bg);border-left:3px solid var(--muted)}
+.fval.ok{border-left-color:var(--ok);background:#ecf8f0}.fval.warn{border-left-color:var(--warn);background:#fdf5e6}.fval.bad{border-left-color:var(--bad);background:#fdeeee}
+.fval b{font-weight:700}.fval button{padding:5px 12px;margin-left:8px;font-size:.88rem}
+.fhead{display:flex;gap:14px;align-items:center}.fhead .fid{flex:1;min-width:0}.fhead .pill{margin-left:auto}
+.fhead .logo{width:56px;height:56px;border-radius:12px;background:#fff;border:1px solid var(--line);object-fit:contain}
+.fid .sub{margin:0}
+.pill{border-radius:999px;padding:5px 12px;font-size:.82rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;background:#e8f2fd;color:#0d3d6b;white-space:nowrap}
+.pill.ok{background:#e4f6ea;color:#11702f}.pill.warn{background:#fdf1dc;color:#8a5a00}.pill.bad{background:#fde4e4;color:#a21f1f}.pill.dim{background:#eef1f5;color:var(--muted)}
+.froute{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;margin:18px 0 6px}
+.ap{display:flex;flex-direction:column;min-width:0}.ap b{font-size:1.7rem;font-weight:800;line-height:1.1}.ap span{color:var(--muted);font-size:.85rem;overflow-wrap:anywhere}.ap.r{text-align:right}
+.ftrack{position:relative;height:6px;background:#e3e8ef;border-radius:3px;margin:12px 0 6px}
+.ftrack i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--blue);border-radius:3px;transition:width .6s}
+.fdot{position:absolute;top:50%;left:0;width:26px;height:26px;margin:-13px 0 0 -13px;transition:left .6s}
+.fdot svg{width:26px;height:26px;fill:var(--blue);transform:rotate(90deg);filter:drop-shadow(0 0 2px #fff)}
+.fprog{text-align:center;color:var(--muted);font-size:.85rem}
+.ftimes{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0}
+.ftimes>div{border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:0}
+.ftimes h4{margin:0;color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.ftimes p{margin:2px 0 0;font-size:1.25rem;font-weight:700}.ftimes p.sub{font-size:.85rem;font-weight:400;overflow-wrap:anywhere}
+.late{color:var(--bad)}.early{color:var(--ok)}
+.fmap{width:100%;height:auto;aspect-ratio:600/280;background:#eef1f4;border:1px solid var(--line);border-radius:10px;margin:4px 0 0;display:block}
+.fmap{background:#0b2545}.fmap .ref{filter:invert(1);opacity:.55}
+.fmap .gc{fill:none;stroke:#fff;stroke-opacity:.75;stroke-width:2;stroke-dasharray:7 6}
+.fmap .trailcase{fill:none;stroke:#07111f;stroke-opacity:.6;stroke-width:7;stroke-linejoin:round;stroke-linecap:round}
+.fmap .trail{fill:none;stroke:#ffd23f;stroke-width:3.5;stroke-linejoin:round;stroke-linecap:round}
+.fmap .apt{fill:#fff;stroke:#07111f;stroke-width:3}.fmap text{font-size:15px;font-weight:800;fill:#fff;paint-order:stroke;stroke:#07111f;stroke-width:4px;stroke-linejoin:round}
+.fmap .home{fill:#8be36d;stroke:#07111f;stroke-width:2}.fmap .me{fill:#ffd23f;stroke:#07111f;stroke-width:1.5}
+.mapcredit{margin:4px 2px 8px;font-size:.72rem;color:var(--muted);text-align:right}.mapcredit a{color:inherit}
+.facts.fl{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.tlogo{width:18px;height:18px;border-radius:4px;vertical-align:-4px;margin-right:6px;object-fit:contain}
+@media (max-width:520px){.fhead{flex-wrap:wrap}.fhead .pill{margin-left:0}.facts.fl{grid-template-columns:1fr}.ap b{font-size:1.35rem}.inrow{grid-auto-flow:row}}

@@ -17,6 +17,9 @@
 #define KEY_AP_PASSWORD "ap_pass"
 #define KEY_SETTINGS_A "trk_a"
 #define KEY_SETTINGS_B "trk_b"
+/* A secret, so it lives outside the settings record that /api/v1/config
+ * describes; factory reset still erases it with the rest of the namespace. */
+#define KEY_FLYSTACK "fs_key"
 
 #define AP_PREFIX "AirTrack-"
 #define SETTINGS_MAGIC 0x4b525441UL /* "ATRK" in little-endian storage. */
@@ -740,6 +743,80 @@ bool airtrack_settings_is_night(const airtrack_settings_t *settings,
         return minutes_of_day >= start && minutes_of_day < end;
     }
     return minutes_of_day >= start || minutes_of_day < end; /* wraps midnight */
+}
+
+static bool flystack_key_valid(const char *key)
+{
+    const size_t length = strnlen(key, AIRTRACK_FLYSTACK_KEY_MAX_LENGTH + 1U);
+    if (length < 8U || length > AIRTRACK_FLYSTACK_KEY_MAX_LENGTH) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        const char byte = key[index];
+        if (!((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9') || byte == '-' || byte == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+esp_err_t airtrack_config_load_flystack_key(char *out, size_t capacity)
+{
+    if (out == NULL || capacity < AIRTRACK_FLYSTACK_KEY_MAX_LENGTH + 1U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    esp_err_t err = airtrack_config_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+    nvs_handle_t handle;
+    err = nvs_open(CONFIG_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err == ESP_ERR_NVS_NOT_FOUND ? ESP_ERR_NOT_FOUND : err;
+    }
+    size_t length = capacity;
+    err = nvs_get_str(handle, KEY_FLYSTACK, out, &length);
+    nvs_close(handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        out[0] = '\0';
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (err != ESP_OK || !flystack_key_valid(out)) {
+        out[0] = '\0';
+        return err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t airtrack_config_save_flystack_key(const char *key)
+{
+    if (key == NULL || (key[0] != '\0' && !flystack_key_valid(key))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = airtrack_config_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+    nvs_handle_t handle;
+    err = nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (key[0] == '\0') {
+        err = nvs_erase_key(handle, KEY_FLYSTACK);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    } else {
+        err = nvs_set_str(handle, KEY_FLYSTACK, key);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
 }
 
 esp_err_t airtrack_config_factory_reset(void)

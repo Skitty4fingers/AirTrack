@@ -7,6 +7,7 @@ idf_component_register(
         captive_dns
         config
         connectivity
+        flight_info
         ota
         sensors
         storage

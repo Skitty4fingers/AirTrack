@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -193,7 +194,7 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
     static const char *consumed[] = {
         "hex", "flight", "r", "t", "desc", "lat", "lon", "dst",
         "dir", "seen_pos", "alt_baro", "alt_geom", "baro_rate", "gs",
-        "track", "squawk", "category", "emergency",
+        "track", "squawk", "category", "emergency", "year",
     };
     for (size_t index = 0U; index < sizeof(consumed) / sizeof(consumed[0]);
          ++index) {
@@ -216,14 +217,23 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
         !finite_number(longitude) || !finite_number(seen_pos) ||
         latitude->valuedouble < -90.0 || latitude->valuedouble > 90.0 ||
         longitude->valuedouble < -180.0 || longitude->valuedouble > 180.0 ||
-        seen_pos->valuedouble < 0.0 ||
-        seen_pos->valuedouble > parser->settings.max_position_age_s) {
+        seen_pos->valuedouble < 0.0) {
         cJSON_Delete(root);
         ++parser->rejected;
         return ESP_OK;
     }
     for (size_t index = 0U; aircraft.hex[index] != '\0'; ++index) {
         aircraft.hex[index] = (char)toupper((unsigned char)aircraft.hex[index]);
+    }
+    const bool focused = parser->settings.focus_flight[0] != '\0';
+    const double max_age = focused &&
+            parser->settings.max_position_age_s < AIRTRACK_FOCUS_MAX_POSITION_AGE_S
+        ? (double)AIRTRACK_FOCUS_MAX_POSITION_AGE_S
+        : (double)parser->settings.max_position_age_s;
+    if (seen_pos->valuedouble > max_age) {
+        cJSON_Delete(root);
+        ++parser->rejected;
+        return ESP_OK;
     }
     aircraft.latitude = latitude->valuedouble;
     aircraft.longitude = longitude->valuedouble;
@@ -240,6 +250,17 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
     (void)copy_display_string(aircraft.description,
                               sizeof(aircraft.description),
                               unique_item(root, "desc", &duplicate), true);
+    /* Shown instead of the designator, so tidy it once here. */
+    char raw_description[sizeof(aircraft.description)];
+    memcpy(raw_description, aircraft.description, sizeof(raw_description));
+    airtrack_airframe_name(aircraft.aircraft_type, raw_description,
+                           aircraft.description, sizeof(aircraft.description));
+    /* Sent as a string ("1999"); anything implausible is ignored. */
+    const cJSON *year = unique_item(root, "year", &duplicate);
+    if (cJSON_IsString(year) && year->valuestring != NULL) {
+        const long value = strtol(year->valuestring, NULL, 10);
+        aircraft.build_year = value >= 1900 && value <= 2100 ? (uint16_t)value : 0U;
+    }
 
     const cJSON *altitude = unique_item(root, "alt_baro", &duplicate);
     if (cJSON_IsString(altitude) && altitude->valuestring != NULL &&
@@ -258,12 +279,15 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
             aircraft.altitude_ft = (int32_t)lround(altitude->valuedouble);
         }
     }
-    if (aircraft.ground && !parser->settings.include_ground) {
+    /* The airborne-only filter is for nearby clutter.  A followed flight is
+     * shown at the gate and after landing too, so takeoff to landing reads
+     * as one continuous track. */
+    if (aircraft.ground && !parser->settings.include_ground && !focused) {
         cJSON_Delete(root);
         ++parser->rejected;
         return ESP_OK;
     }
-    if (parser->settings.focus_flight[0] != '\0' &&
+    if (focused &&
         !airtrack_aircraft_matches(&aircraft, parser->settings.focus_flight)) {
         cJSON_Delete(root);
         ++parser->rejected;
@@ -282,8 +306,10 @@ static esp_err_t parse_aircraft(airtrack_stream_parser_t *parser)
                           aircraft.latitude, aircraft.longitude,
                           &aircraft.distance_nm, &aircraft.bearing_deg);
     }
+    /* No radius while following one flight: it is requested by identity. */
     if (!isfinite(aircraft.distance_nm) ||
-        aircraft.distance_nm > (float)parser->settings.radius_nm + 0.1f) {
+        (!focused &&
+         aircraft.distance_nm > (float)parser->settings.radius_nm + 0.1f)) {
         cJSON_Delete(root);
         ++parser->rejected;
         return ESP_OK;
@@ -597,6 +623,337 @@ bool airtrack_aircraft_matches(const airtrack_aircraft_t *aircraft,
             strcasecmp(aircraft->callsign, focus) == 0) ||
            (aircraft->registration[0] != '\0' &&
             strcasecmp(aircraft->registration, focus) == 0);
+}
+
+static bool upper_alpha(char byte)
+{
+    return byte >= 'A' && byte <= 'Z';
+}
+
+/*
+ * Names for common designators the ADS-B database sends without a
+ * description; manufacturer names match the database's own spelling after
+ * title-casing.
+ */
+static const struct {
+    char type[5];
+    const char *name;
+} AIRFRAME_NAMES[] = {
+    {"A19N", "Airbus A319neo"}, {"A20N", "Airbus A320neo"}, {"A21N", "Airbus A321neo"},
+    {"A318", "Airbus A318"}, {"A319", "Airbus A319"}, {"A320", "Airbus A320"},
+    {"A321", "Airbus A321"}, {"A332", "Airbus A330-200"}, {"A333", "Airbus A330-300"},
+    {"A339", "Airbus A330-900"}, {"A359", "Airbus A350-900"}, {"A35K", "Airbus A350-1000"},
+    {"A388", "Airbus A380-800"}, {"BCS1", "Airbus A220-100"}, {"BCS3", "Airbus A220-300"},
+    {"B712", "Boeing 717-200"}, {"B737", "Boeing 737-700"}, {"B738", "Boeing 737-800"},
+    {"B739", "Boeing 737-900"}, {"B37M", "Boeing 737 MAX 7"}, {"B38M", "Boeing 737 MAX 8"},
+    {"B39M", "Boeing 737 MAX 9"}, {"B3XM", "Boeing 737 MAX 10"}, {"B744", "Boeing 747-400"},
+    {"B748", "Boeing 747-8"}, {"B752", "Boeing 757-200"}, {"B753", "Boeing 757-300"},
+    {"B762", "Boeing 767-200"}, {"B763", "Boeing 767-300"}, {"B764", "Boeing 767-400"},
+    {"B772", "Boeing 777-200"}, {"B77L", "Boeing 777-200LR"}, {"B77W", "Boeing 777-300ER"},
+    {"B788", "Boeing 787-8"}, {"B789", "Boeing 787-9"}, {"B78X", "Boeing 787-10"},
+    {"CRJ2", "Bombardier CRJ200"}, {"CRJ7", "Bombardier CRJ700"}, {"CRJ9", "Bombardier CRJ900"},
+    {"E170", "Embraer 170"}, {"E75L", "Embraer 175"}, {"E75S", "Embraer 175"},
+    {"E190", "Embraer 190"}, {"E195", "Embraer 195"}, {"E290", "Embraer E190-E2"},
+    {"E295", "Embraer E195-E2"}, {"E550", "Embraer Praetor 600"}, {"E55P", "Embraer Phenom 300"},
+    {"AT45", "ATR 42-500"}, {"AT72", "ATR 72"}, {"AT76", "ATR 72-600"},
+    {"DH8D", "De Havilland Dash 8-400"}, {"MD11", "McDonnell Douglas MD-11"},
+    {"C172", "Cessna 172 Skyhawk"}, {"C182", "Cessna 182 Skylane"}, {"C208", "Cessna 208 Caravan"},
+    {"C25A", "Cessna Citation CJ2"}, {"C25B", "Cessna Citation CJ3"}, {"C25C", "Cessna Citation CJ4"},
+    {"C68A", "Cessna Citation Latitude"}, {"C700", "Cessna Citation Longitude"},
+    {"SR22", "Cirrus SR22"}, {"S22T", "Cirrus SR22T"}, {"SF50", "Cirrus Vision Jet"},
+    {"PC12", "Pilatus PC-12"}, {"PC24", "Pilatus PC-24"}, {"GLF5", "Gulfstream G550"},
+    {"GLF6", "Gulfstream G650"}, {"GA6C", "Gulfstream G600"}, {"B350", "Beech King Air 350"},
+    {"R44", "Robinson R44"}, {"EC35", "Airbus H135"}, {"A139", "Leonardo AW139"},
+    {"C17", "Boeing C-17 Globemaster III"}, {"K35R", "Boeing KC-135 Stratotanker"},
+};
+
+/* Upper-case words the database spells in capitals that are not acronyms. */
+static void title_word(char *word, size_t length)
+{
+    if (length == 9U && strncmp(word, "MCDONNELL", 9U) == 0) {
+        memcpy(word, "McDonnell", 9U);
+        return;
+    }
+    if (length == 2U && strncmp(word, "DE", 2U) == 0) {
+        word[1] = 'e'; /* De Havilland */
+        return;
+    }
+    /* Short words (MAX, ATR, NG) and anything with digits stay as sent. */
+    if (length < 4U) {
+        return;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        if (!upper_alpha(word[index])) {
+            return;
+        }
+    }
+    for (size_t index = 1U; index < length; ++index) {
+        word[index] = (char)(word[index] - 'A' + 'a');
+    }
+}
+
+void airtrack_airframe_name(const char *type, const char *description,
+                            char *out, size_t capacity)
+{
+    if (out == NULL || capacity == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    if (description != NULL && description[0] != '\0') {
+        /* Copy with runs of spaces collapsed, then title-case word by word. */
+        size_t used = 0U;
+        for (const char *cursor = description; *cursor != '\0' && used + 1U < capacity;
+             ++cursor) {
+            if (*cursor == ' ' && (used == 0U || out[used - 1U] == ' ')) {
+                continue;
+            }
+            out[used++] = *cursor;
+        }
+        while (used > 0U && out[used - 1U] == ' ') {
+            --used;
+        }
+        out[used] = '\0';
+        for (size_t start = 0U; start < used;) {
+            size_t end = start;
+            while (end < used && out[end] != ' ') {
+                ++end;
+            }
+            title_word(out + start, end - start);
+            start = end + 1U;
+        }
+        return;
+    }
+    if (type == NULL || type[0] == '\0') {
+        return;
+    }
+    for (size_t index = 0U; index < sizeof(AIRFRAME_NAMES) / sizeof(AIRFRAME_NAMES[0]);
+         ++index) {
+        if (strcmp(AIRFRAME_NAMES[index].type, type) == 0) {
+            (void)snprintf(out, capacity, "%s", AIRFRAME_NAMES[index].name);
+            return;
+        }
+    }
+}
+
+static bool digit(char byte)
+{
+    return byte >= '0' && byte <= '9';
+}
+
+bool airtrack_is_airline_callsign(const char *code)
+{
+    if (code == NULL) {
+        return false;
+    }
+    const size_t length = strnlen(code, 8U);
+    if (length < 4U || length > 7U || !upper_alpha(code[0]) ||
+        !upper_alpha(code[1]) || !upper_alpha(code[2]) || !digit(code[3])) {
+        return false;
+    }
+    for (size_t index = 4U; index < length; ++index) {
+        if (!upper_alpha(code[index]) && !digit(code[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+size_t airtrack_focus_lookup_order(const char *focus,
+                                   airtrack_focus_kind_t order[AIRTRACK_FOCUS_KINDS_MAX])
+{
+    if (focus == NULL || focus[0] == '\0' || order == NULL) {
+        return 0U;
+    }
+    const size_t length = strnlen(focus, AIRTRACK_FOCUS_MAX_LENGTH + 1U);
+    bool hex = length == 6U;
+    bool dash = false;
+    for (size_t index = 0U; index < length; ++index) {
+        hex = hex && isxdigit((unsigned char)focus[index]);
+        dash = dash || focus[index] == '-';
+    }
+    size_t count = 0U;
+    if (focus[0] == '~') {
+        /* Non-ICAO (TIS-B) addresses exist only as hex. */
+        order[count++] = AIRTRACK_FOCUS_HEX;
+    } else if (dash) {
+        order[count++] = AIRTRACK_FOCUS_REGISTRATION;
+    } else if (airtrack_is_airline_callsign(focus)) {
+        order[count++] = AIRTRACK_FOCUS_CALLSIGN;
+        if (hex) {
+            order[count++] = AIRTRACK_FOCUS_HEX;
+        }
+    } else if (hex) {
+        order[count++] = AIRTRACK_FOCUS_HEX;
+        order[count++] = AIRTRACK_FOCUS_CALLSIGN;
+    } else {
+        /* General aviation usually broadcasts its registration as callsign. */
+        order[count++] = AIRTRACK_FOCUS_REGISTRATION;
+        order[count++] = AIRTRACK_FOCUS_CALLSIGN;
+    }
+    return count;
+}
+
+const char *airtrack_focus_kind_path(airtrack_focus_kind_t kind)
+{
+    switch (kind) {
+    case AIRTRACK_FOCUS_HEX:
+        return "hex";
+    case AIRTRACK_FOCUS_REGISTRATION:
+        return "registration";
+    case AIRTRACK_FOCUS_CALLSIGN:
+    default:
+        return "callsign";
+    }
+}
+
+airtrack_flight_phase_t airtrack_flight_phase(const airtrack_aircraft_t *aircraft,
+                                              float position_age_s,
+                                              bool was_airborne,
+                                              float remaining_nm)
+{
+    if (aircraft == NULL) {
+        return AIRTRACK_PHASE_UNKNOWN;
+    }
+    /* A transponder slowing on the ground often goes quiet before landing
+     * is reported, so a slow, low aircraft near its destination counts too. */
+    const bool slow = aircraft->ground_speed_valid &&
+                      aircraft->ground_speed_kt < 50.0f;
+    const bool on_ground = aircraft->ground ||
+        (slow && (!aircraft->altitude_valid || aircraft->altitude_ft < 1500));
+    if (on_ground) {
+        /* On the ground at its destination has arrived, even when following
+         * began only after touchdown -- but only once ADS-B has confirmed
+         * which end is the destination; otherwise a flight taxiing out
+         * would read as landed. */
+        const bool at_destination = aircraft->route_confirmed &&
+                                    remaining_nm >= 0.0f && remaining_nm < 5.0f;
+        return was_airborne || at_destination ? AIRTRACK_PHASE_LANDED
+                                              : AIRTRACK_PHASE_GROUND;
+    }
+    if (position_age_s > AIRTRACK_PHASE_LOST_AGE_S) {
+        return AIRTRACK_PHASE_LOST;
+    }
+    const bool near_destination = remaining_nm >= 0.0f && remaining_nm < 40.0f;
+    const bool low = aircraft->altitude_valid && aircraft->altitude_ft < 10000;
+    if (aircraft->vertical_rate_valid && aircraft->vertical_rate_fpm > 300) {
+        return AIRTRACK_PHASE_CLIMB;
+    }
+    if (aircraft->vertical_rate_valid && aircraft->vertical_rate_fpm < -300) {
+        return near_destination || (low && remaining_nm >= 0.0f &&
+                                    remaining_nm < 80.0f)
+                   ? AIRTRACK_PHASE_APPROACH : AIRTRACK_PHASE_DESCENT;
+    }
+    if (low && near_destination) {
+        return AIRTRACK_PHASE_APPROACH;
+    }
+    if (!aircraft->altitude_valid) {
+        return AIRTRACK_PHASE_UNKNOWN;
+    }
+    return AIRTRACK_PHASE_CRUISE;
+}
+
+const char *airtrack_flight_phase_name(airtrack_flight_phase_t phase)
+{
+    static const char *names[] = {
+        "unknown", "ground", "climb", "cruise", "descent", "approach",
+        "landed", "lost",
+    };
+    return phase <= AIRTRACK_PHASE_LOST ? names[phase] : "unknown";
+}
+
+float airtrack_route_progress(const airtrack_aircraft_t *aircraft)
+{
+    if (aircraft == NULL || !aircraft->origin_valid ||
+        !aircraft->destination_valid || !aircraft->route_confirmed) {
+        return -1.0f;
+    }
+    float flown = 0.0f;
+    float remaining = 0.0f;
+    float bearing = 0.0f;
+    airtrack_geometry(aircraft->origin_latitude, aircraft->origin_longitude,
+                      aircraft->latitude, aircraft->longitude, &flown, &bearing);
+    airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                      aircraft->destination_latitude,
+                      aircraft->destination_longitude, &remaining, &bearing);
+    const float total = flown + remaining;
+    if (!isfinite(total) || total < 1.0f) {
+        return -1.0f;
+    }
+    return flown / total;
+}
+
+static float angle_between(float a, float b)
+{
+    float difference = fmodf(fabsf(a - b), 360.0f);
+    return difference > 180.0f ? 360.0f - difference : difference;
+}
+
+int airtrack_route_evidence(const airtrack_aircraft_t *aircraft)
+{
+    if (aircraft == NULL || !aircraft->origin_valid || !aircraft->destination_valid ||
+        aircraft->ground) {
+        return 0;
+    }
+    float to_origin = 0.0f;
+    float bearing_origin = 0.0f;
+    float to_destination = 0.0f;
+    float bearing_destination = 0.0f;
+    airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                      aircraft->origin_latitude, aircraft->origin_longitude,
+                      &to_origin, &bearing_origin);
+    airtrack_geometry(aircraft->latitude, aircraft->longitude,
+                      aircraft->destination_latitude, aircraft->destination_longitude,
+                      &to_destination, &bearing_destination);
+    /* Near an airport and clearly climbing or descending. */
+    if (aircraft->vertical_rate_valid && aircraft->altitude_valid &&
+        aircraft->altitude_ft < 15000) {
+        const int32_t rate = aircraft->vertical_rate_fpm;
+        if (rate > 500 && to_origin < 40.0f && to_destination > to_origin) {
+            return 1;
+        }
+        if (rate > 500 && to_destination < 40.0f && to_origin > to_destination) {
+            return -1;
+        }
+        if (rate < -500 && to_destination < 60.0f && to_origin > to_destination) {
+            return 1;
+        }
+        if (rate < -500 && to_origin < 60.0f && to_destination > to_origin) {
+            return -1;
+        }
+    }
+    /* En route: heading for one airport and away from the other. */
+    if (aircraft->track_valid && to_origin > 30.0f && to_destination > 30.0f) {
+        const float toward_destination =
+            angle_between(aircraft->track_deg, bearing_destination);
+        const float toward_origin = angle_between(aircraft->track_deg, bearing_origin);
+        if (toward_destination < 45.0f && toward_origin > 90.0f) {
+            return 1;
+        }
+        if (toward_origin < 45.0f && toward_destination > 90.0f) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+void airtrack_route_reverse(airtrack_aircraft_t *aircraft)
+{
+    if (aircraft == NULL) {
+        return;
+    }
+    char code[sizeof(aircraft->route_from)];
+    memcpy(code, aircraft->route_from, sizeof(code));
+    memcpy(aircraft->route_from, aircraft->route_to, sizeof(code));
+    memcpy(aircraft->route_to, code, sizeof(code));
+    const bool valid = aircraft->origin_valid;
+    const double latitude = aircraft->origin_latitude;
+    const double longitude = aircraft->origin_longitude;
+    aircraft->origin_valid = aircraft->destination_valid;
+    aircraft->origin_latitude = aircraft->destination_latitude;
+    aircraft->origin_longitude = aircraft->destination_longitude;
+    aircraft->destination_valid = valid;
+    aircraft->destination_latitude = latitude;
+    aircraft->destination_longitude = longitude;
 }
 
 const char *airtrack_feed_state_name(airtrack_feed_state_t state)

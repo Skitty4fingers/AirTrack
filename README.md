@@ -36,7 +36,7 @@ Rendered from the current firmware: the LCD frames come from
 device, and the installer is captured from the published page. Design
 references are in [`docs/ui/`](docs/ui/).
 
-**Device** — single-flight focus with route and ETA, no recent reports, Wi-Fi
+**Device** — following a single flight (logo, route progress, times, phase), no recent reports, Wi-Fi
 lost, and setup (network names, addresses, and coordinates in all images are
 sample values):
 
@@ -114,10 +114,81 @@ development, and the fallback when no Web Serial browser is available.
 
 ## Firmware status
 
-The current release is AirTrack 1.7.0. Version 1.8.0 is built and running
-on hardware but has not been published, so no device is offered it yet.
+The current release is AirTrack 1.8.0. Version 1.9.0 is in development and
+has not been published, so no device is offered it yet.
 
-Unreleased (1.8.0), ESP32-C6-Touch-LCD-2.8 only unless noted:
+Unreleased (1.9.0), both boards:
+
+- **A followed flight is tracked from takeoff to landing, anywhere.** With
+  *Track a single flight* set, adsb.fi is asked for that aircraft by
+  identity (`/v2/callsign`, `/v2/hex`, or `/v2/registration`) instead of by
+  radius, so the search radius no longer applies. The focus text is tried as
+  each plausible identity in turn until one answers. The airborne-only
+  filter is ignored so the flight shows at the gate and after landing,
+  positions up to 10 minutes old are accepted for sparse oceanic coverage,
+  and when reports stop the last position stays on screen with its true age
+  for up to 30 minutes.
+- **Flight-number check on the dashboard.** Typing into *Track a single
+  flight* gives an instant reading of the format: an airline callsign, an
+  IATA ticket number such as `AS555`, a registration, or an ICAO address. It
+  offers a fix for leading zeros (`ASA0555` becomes `ASA555`). Airline
+  numbers are then confirmed through adsbdb.com (free), which also turns an
+  IATA number into the callsign aircraft actually broadcast. **Check** does
+  the same and, with a Flystack key, fetches the flight's schedule.
+- **Flight details from Flystack.** A key entered under *Flight data* (stored
+  on the device, never shown back or included in `/api/v1/config`) adds
+  scheduled and estimated times, delays, terminals, gates, the baggage belt,
+  and airframe details for the followed flight. The free plan is about 100
+  lookups a month, so the device spends at most three per followed flight
+  (when it is chosen, at takeoff, and on approach; none on choosing it if
+  **Check** already fetched it), and never more than 12 in any 24 hours. The
+  dashboard shows the requests left, from Flystack's unbilled usage endpoint.
+  Airline and route still come from adsbdb.com, free.
+- **Airline logos.** The device fetches the followed airline's 64 x 64 tile
+  from pics.avs.io, shows it at 32 x 32 on the LCD (decoded with the
+  ESP32-C6 ROM's inflate), and serves the original to the dashboard. The
+  nearest-aircraft table loads small tiles from pics.avs.io directly.
+- **New single-flight screens.** On the LCD: logo and callsign, airline and
+  type, origin and destination with a progress bar and distance to go,
+  departure and arrival times (amber when late; the arrival is the live
+  estimate from ground speed once airborne), the flight phase (scheduled, at
+  the gate, taxiing, climbing, cruising, descending, on approach, landed,
+  signal lost), and rows for altitude, speed and time left, position, gates
+  or airframe, and position age. On the dashboard, a flight card with the
+  same information, a status pill, and a route map drawn from the flown
+  track and the planned great circle, with no map tiles.
+- **ADS-B takes precedence over Flystack.** What the aircraft is seen doing
+  wins: identity, airframe, route, phase, and the times ADS-B observed
+  (actual takeoff and touchdown, and an arrival estimate from distance to go
+  and ground speed, using a typical airliner cruise speed while still
+  climbing). Flystack only fills gaps: the timetable, delays, terminals,
+  gates, baggage belt, and anything ADS-B lacks.
+- **Route direction from ADS-B.** adsbdb lists a callsign's usual route, and
+  out-and-back flight numbers share one entry, so it can be backwards for
+  today's leg (ASA555 listed MSP-SEA while flying SEA-MSP). Climbing out near
+  an airport, descending toward one, or the en-route heading settles the
+  direction. Until then, distance to go, progress, the ETA, and "landed at
+  the destination" are withheld, since taxiing out and taxiing in look alike.
+- **Times in the device's time zone.** The dashboard's departure and arrival
+  are formatted on the device in its configured zone, with the abbreviation
+  (for example `ETA 13:22 PDT`), matching the LCD.
+- **Airframe names instead of ICAO designators** (`Boeing 737 MAX 9` rather
+  than `B39M`), from the ADS-B database's description, tidied into title
+  case, with a built-in list for common types it leaves blank. Shown on both
+  screens and in `/api/v1/aircraft` as `desc`, with the build `year`.
+- **Route map over NASA GIBS imagery**: Blue Marble shaded relief with
+  borders and coastlines, public domain and keyless, in Web Mercator with
+  the flown track and the planned great circle. The page's
+  Content-Security-Policy allows images from `gibs.earthdata.nasa.gov` and
+  `pics.avs.io`. The followed airline's logo is served by the device itself
+  (`/api/v1/flight/logo.png`), so a browser blocking the logo host still
+  shows it.
+- API: `GET /api/v1/flight` (details, phase, trail, Flystack quota),
+  `GET`/`POST /api/v1/flight/check`, and `POST /api/v1/flystack` (CSRF-guarded,
+  an empty `key` removes it). `/api/v1/aircraft` adds `lat`, `lon`,
+  `progress`, and `airline_iata` for each aircraft.
+
+Changes in 1.8.0, ESP32-C6-Touch-LCD-2.8 only unless noted:
 
 - Temperature units are selectable (Display card), independently of the
   distance units. Settings schema 5; schema 4 records migrate to Celsius.

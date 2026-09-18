@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "flight_info.c"
+        "flight_info_parse.c"
+        "flight_png.c"
+        "flight_png_inflate.c"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        config
+        tracker
+    PRIV_REQUIRES
+        esp_http_client
+        esp_rom
+        esp_timer
+        freertos
+        json
+        log
+        mbedtls
+)

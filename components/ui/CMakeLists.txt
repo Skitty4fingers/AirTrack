@@ -5,6 +5,7 @@ idf_component_register(
         board
         config
         esp_lcd
+        flight_info
         espressif__esp_lvgl_port
         lvgl__lvgl
         tracker

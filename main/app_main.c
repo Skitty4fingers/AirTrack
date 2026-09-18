@@ -4,6 +4,7 @@
 #include "board_sensors.h"
 #include "captive_dns.h"
 #include "connectivity.h"
+#include "flight_info.h"
 #include "ota_update.h"
 #include "setup_web.h"
 #include "status_web.h"
@@ -907,6 +908,12 @@ static setup_reason_t run_tracking_mode(void)
             const bool ui_environment_valid =
                 board_sensors_read_environment(&ui_temperature_c,
                                                &ui_humidity_percent) == ESP_OK;
+            /* Static: the supervisor stack has little margin for copies. */
+            static flight_info_t ui_flight;
+            static uint16_t ui_logo[FLIGHT_INFO_LOGO_SIZE * FLIGHT_INFO_LOGO_SIZE];
+            static uint32_t ui_logo_generation;
+            flight_info_get(&ui_flight);
+            (void)flight_info_copy_logo(ui_logo, &ui_logo_generation);
             const ui_tracking_state_t tracking_state = {
                 .settings = &settings,
                 .snapshot = &aircraft,
@@ -921,6 +928,9 @@ static setup_reason_t run_tracking_mode(void)
                 .rssi_available = status.rssi_available,
                 .rssi_dbm = status.rssi_dbm,
                 .wifi_connected = status.connected,
+                .flight = &ui_flight,
+                .logo = ui_logo_generation != 0U ? ui_logo : NULL,
+                .logo_generation = ui_logo_generation,
             };
             const esp_err_t ui_result =
                 ui_diagnostic_show_tracking(&tracking_state);
@@ -1032,6 +1042,8 @@ void app_main(void)
     ESP_ERROR_CHECK(connectivity_init());
     ESP_ERROR_CHECK(ota_init(OTA_MANIFEST_URL, ota_prepare, NULL));
     ESP_ERROR_CHECK(adsb_client_start(&s_settings));
+    ESP_ERROR_CHECK(flight_info_init(adsb_client_wake));
+    ESP_ERROR_CHECK(adsb_client_set_hook(flight_info_service, NULL));
 
     if (!s_config.wifi_configured) {
         ESP_ERROR_CHECK(enter_setup_mode(SETUP_REASON_UNCONFIGURED));
