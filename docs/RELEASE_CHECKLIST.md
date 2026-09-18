@@ -3,10 +3,9 @@
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
 
-1.9.0 was run on an **ESP32-C6-Touch-LCD-2.8**. The **ESP32-C6-LCD-1.47**
-image passes every build and host gate below but has not been flashed to a
-1.47 for this release; bootloader rollback remains the backstop should it
-fail its start-up self-test.
+1.9.0 was run on both boards: the **ESP32-C6-Touch-LCD-2.8** following a
+live flight from gate to gate, and the **ESP32-C6-LCD-1.47** checked on
+hardware after publication.
 
 ## Passed for the current artifact
 
@@ -41,6 +40,8 @@ fail its start-up self-test.
 - [x] Published release assets verified against their manifests after upload:
   size and SHA-256 of both boards re-downloaded from the GitHub Release and
   compared to the committed manifest values.
+- [x] 1.9.0 on-target (1.47): the published image was run on a 1.47 and
+  looked right (18 Sep 2026).
 - [x] 1.9.0 on-target (2.8): followed ASA555 by callsign with no radius from
   the gate at SEA through the climb-out; the route adsbdb lists as MSP-SEA
   was reoriented to SEA-MSP from the climb, the arrival estimate (11:28 PDT)
@@ -213,10 +214,11 @@ Expected differences, to confirm rather than treat as faults:
   the panel dims and the LED goes dark; restore the real window afterwards.
 - [ ] Confirm the accessory LED is blue while tracking and orange in setup or
   when the feed is stale/offline.
-- [ ] 1.9.0: set *Track a single flight* to an airliner more than 250 NM away
+- [x] 1.9.0: set *Track a single flight* to an airliner more than 250 NM away
   and confirm it appears (identity lookup, no radius), with the airline logo
   on the LCD, route progress, and distance to go; then follow one through
-  landing and confirm `LANDED` is held with a growing age.
+  landing and confirm `LANDED` is held with a growing age. Passed on the 2.8
+  (18 Sep 2026): ASA555 was watched from gate to gate and looked right.
 - [ ] 1.9.0: follow a registration (`N…`) and an ICAO hex and confirm the log
   shows the identity lookup settling on `registration` / `hex`.
 - [ ] 1.9.0: with a Flystack key saved, confirm one lookup when the flight is
