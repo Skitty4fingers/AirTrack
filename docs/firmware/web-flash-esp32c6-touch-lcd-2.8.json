@@ -1,16 +1,16 @@
 {
   "name": "AirTrack (esp32c6-touch-lcd-2.8)",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
-  "sha256": "59f9b4580d35f3e9a64522cd75063d377885e7de164654b07ff27661faf661bf",
-  "size": 1936672,
+  "sha256": "f85dbb8cc14bd532f09c2d117cb5fed17846fce0566e0096fe5d871adff4de7d",
+  "size": 2002240,
   "builds": [
     {
       "chipFamily": "ESP32-C6",
       "parts": [
         {
-          "path": "airtrack-esp32c6-touch-lcd-2.8-1.8.0-factory.bin",
+          "path": "airtrack-esp32c6-touch-lcd-2.8-1.9.0-factory.bin",
           "offset": 0
         }
       ]

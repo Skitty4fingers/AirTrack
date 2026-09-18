@@ -1,38 +1,54 @@
-# AirTrack 1.8.0 release checklist
+# AirTrack 1.9.0 release checklist
 
 This checklist distinguishes reproducible release gates from tests that need
 the physical device, its real fixed location, or elapsed soak time.
 
-Everything recorded as passed below was measured on the **ESP32-C6-LCD-1.47**.
-The ESP32-C6-Touch-LCD-2.8 port has not yet been run on hardware; its
-acceptance is the separate section near the end, and no 2.8 image should be
-published until that section passes.
+1.9.0 was run on an **ESP32-C6-Touch-LCD-2.8**. The **ESP32-C6-LCD-1.47**
+image passes every build and host gate below but has not been flashed to a
+1.47 for this release; bootloader rollback remains the backstop should it
+fail its start-up self-test.
 
 ## Passed for the current artifact
 
-- [x] ESP-IDF 5.5.5 production build succeeds.
-- [x] Host tracker/parser tests pass, including malformed and dense responses.
+- [x] ESP-IDF 5.5.5 production build succeeds for both boards, and each
+  generated config names its board.
+- [x] Host tracker/parser tests pass, including malformed and dense responses,
+  and the flight tests: identity lookups, flight phase, route direction,
+  adsbdb/Flystack/usage parsers, airframe names, and PNG decoding checked
+  pixel for pixel against an independent decode of a real logo tile.
 - [x] adsb.fi transport is HTTPS with certificate verification; redirects are
   disabled and polling cannot exceed the public one-request-per-second limit.
+  The flight-details requests (adsbdb, Flystack, logo) use the same verified
+  TLS with redirects disabled, and run one at a time from the ADS-B worker.
 - [x] SD mount never auto-formats and absence/mount failure is non-fatal.
 - [x] Both images are below the 3.5 MiB gate:
-  - ESP32-C6-LCD-1.47: 1,806,800 bytes (55 percent of each 3,904 KiB slot free)
-  - ESP32-C6-Touch-LCD-2.8: 1,805,600 bytes (71 percent of each 6 MiB slot free)
+  - ESP32-C6-LCD-1.47: 1,872,400 bytes (53 percent of each 3,904 KiB slot free)
+  - ESP32-C6-Touch-LCD-2.8: 1,871,168 bytes (70 percent of each 6 MiB slot free)
 - [x] Artifact SHA-256:
-  - `eb2c944f65babdd86cb5d386ce04fca158dc027006d2f2891812708e9ce42886`
-    (`airtrack-1.8.0.bin`)
-  - `c6965989456b9337d596b77a9a03f7a262ce63ff93865c00e737ffbaaa4d709a`
-    (`airtrack-esp32c6-touch-lcd-2.8-1.8.0.bin`)
+  - `7d50069651de7c8bbcd1bc5dbac82914280c5c3b076b03c67336057749328446`
+    (`airtrack-1.9.0.bin`)
+  - `bbb3cba6431d703cd045292b65eef2c10e474c3975de187f726001718bf13c4c`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.9.0.bin`)
 - [x] Browser-install factory image SHA-256 (bootloader + partition table +
-  otadata + app merged at offset 0, byte-identical to the four release
-  binaries):
-  - `edcb791b88c3144790ffa5ae83b90f3931d82697eab71f5f290d2befaabcf06e`
-    (`airtrack-1.8.0-factory.bin`)
-  - `59f9b4580d35f3e9a64522cd75063d377885e7de164654b07ff27661faf661bf`
-    (`airtrack-esp32c6-touch-lcd-2.8-1.8.0-factory.bin`)
+  otadata + app merged at offset 0; the app and partition table regions are
+  byte-identical to the release binaries, and esptool stamps the flash
+  parameters into the bootloader header):
+  - `11df5f8d1f9468994b72f85cbc5994deb75b9891077acac317bd22f59dd36a2f`
+    (`airtrack-1.9.0-factory.bin`)
+  - `f85dbb8cc14bd532f09c2d117cb5fed17846fce0566e0096fe5d871adff4de7d`
+    (`airtrack-esp32c6-touch-lcd-2.8-1.9.0-factory.bin`)
+- [x] Manifest release notes fit the device's 480-byte limit.
 - [x] Published release assets verified against their manifests after upload:
   size and SHA-256 of both boards re-downloaded from the GitHub Release and
   compared to the committed manifest values.
+- [x] 1.9.0 on-target (2.8): followed ASA555 by callsign with no radius from
+  the gate at SEA through the climb-out; the route adsbdb lists as MSP-SEA
+  was reoriented to SEA-MSP from the climb, the arrival estimate (11:28 PDT)
+  was within three minutes of FlightAware's, the airline logo was fetched,
+  decoded for the LCD and served at `/api/v1/flight/logo.png`, and the
+  airframe read "Boeing 737 MAX 9". Free heap stayed above 40 KiB after boot.
+  Flystack answered 403 for flight lookups with the test key, so the Flystack
+  path was exercised only against the documented response.
 - [x] 1.7.0 on-target (2.8): I/O expander answered at 0x24, panel came up at
   240x320 and 40 MHz, PCF85063A seeded the clock before Wi-Fi, SHTC3 read
   through to the dashboard, station joined, mDNS answered, and the feed

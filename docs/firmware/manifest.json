@@ -1,9 +1,9 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "board": "esp32c6-lcd-1.47",
-  "size": 1806800,
-  "sha256": "eb2c944f65babdd86cb5d386ce04fca158dc027006d2f2891812708e9ce42886",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.8.0/airtrack-1.8.0.bin",
-  "notes": "Temperature units are now selectable in the Display card, independently of the distance units.\nThe on-board climate reading moves into the status bar.\nFixes a hardware status value on the bring-up screen wrapping onto a clipped second line, visible on any unit with no SD card inserted.",
-  "released": "2026-09-12"
+  "size": 1872400,
+  "sha256": "7d50069651de7c8bbcd1bc5dbac82914280c5c3b076b03c67336057749328446",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.9.0/airtrack-1.9.0.bin",
+  "notes": "Track a single flight now follows it from takeoff to landing, anywhere, by callsign, registration, or hex instead of radius.\nNew flight screens: airline logo, route progress, local times, flight phase, and a route map on the dashboard.\nFlight-number check (AS555 becomes ASA555); optional Flystack key for timetable and gates.\nAirframes shown by name, e.g. Boeing 737 MAX 9.",
+  "released": "2026-09-18"
 }

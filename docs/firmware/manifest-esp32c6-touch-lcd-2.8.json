@@ -1,9 +1,9 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "board": "esp32c6-touch-lcd-2.8",
-  "size": 1805600,
-  "sha256": "c6965989456b9337d596b77a9a03f7a262ce63ff93865c00e737ffbaaa4d709a",
-  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.8.0/airtrack-esp32c6-touch-lcd-2.8-1.8.0.bin",
-  "notes": "Battery level and power source: a gauge in the top right of the screen, a dashboard chip, and new fields in the status API. On USB the level is withheld, because the charger holds the sense rail near full whatever the cell is doing.\nTemperature units are selectable, and the climate reading moves into the status bar and the footer.",
-  "released": "2026-09-12"
+  "size": 1871168,
+  "sha256": "bbb3cba6431d703cd045292b65eef2c10e474c3975de187f726001718bf13c4c",
+  "url": "https://github.com/Skitty4fingers/AirTrack/releases/download/v1.9.0/airtrack-esp32c6-touch-lcd-2.8-1.9.0.bin",
+  "notes": "Track a single flight now follows it from takeoff to landing, anywhere, by callsign, registration, or hex instead of radius.\nNew flight screens: airline logo, route progress, local times, flight phase, and a route map on the dashboard.\nFlight-number check (AS555 becomes ASA555); optional Flystack key for timetable and gates.\nAirframes shown by name, e.g. Boeing 737 MAX 9.",
+  "released": "2026-09-18"
 }
