@@ -114,10 +114,9 @@ development, and the fallback when no Web Serial browser is available.
 
 ## Firmware status
 
-The current release is AirTrack 1.8.0. Version 1.9.0 is in development and
-has not been published, so no device is offered it yet.
+The current release is AirTrack 1.9.0.
 
-Unreleased (1.9.0), both boards:
+Changes in 1.9.0, both boards:
 
 - **A followed flight is tracked from takeoff to landing, anywhere.** With
   *Track a single flight* set, adsb.fi is asked for that aircraft by
